@@ -109,6 +109,12 @@ impl Theme {
         }
     }
 
+    /// The truecolor palette, independent of the environment (screenshots).
+    #[cfg(test)]
+    pub(crate) fn truecolor() -> Self {
+        Self::rgb()
+    }
+
     /// Plain glyphs with the indexed palette, for stable test snapshots.
     #[cfg(test)]
     pub(crate) fn ascii() -> Self {

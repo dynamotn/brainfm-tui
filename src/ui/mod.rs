@@ -92,4 +92,6 @@ fn centered_line(area: Rect, width: u16) -> Rect {
 }
 
 #[cfg(test)]
+mod screenshots;
+#[cfg(test)]
 pub(crate) mod tests;
