@@ -485,3 +485,15 @@ fn toast_expires() {
     update(&mut s, Action::Tick(Duration::from_secs(10)));
     assert!(s.toast.is_none());
 }
+
+#[test]
+fn api_errors_map_to_reducer_kinds() {
+    use crate::api::ApiError;
+    assert_eq!(
+        super::error_kind(&ApiError::Unauthorized),
+        ApiErrorKind::Unauthorized
+    );
+    assert!(
+        matches!(super::error_kind(&ApiError::RateLimited), ApiErrorKind::Other(m) if m.contains("rate limited"))
+    );
+}
