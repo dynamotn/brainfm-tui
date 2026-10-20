@@ -14,7 +14,7 @@ Research (my.brain.fm JS bundle, fetched 2026-10-20; prior art `quintrino/brainf
 - Play: `POST /v3/users/{uid}/sessions?platform=web` body
   `{dynamicActivityId, version:3, neuralEffectLevels:[...], genreNames:[...]}` →
   `servings[0].track.name`, `servings[0].trackVariation.tokenedUrl` (signed mp3 URL, fallback `audio.brain.fm/{url}`).
-- Favorites `GET /users/{uid}/servings/favorites?version=2`, `POST|DELETE /users/{uid}/tracks/{id}/favorites`;
+- Favorites (all `/v3`, verified 2026-10-20) `GET /users/{uid}/servings/favorites?version=2`, `POST|DELETE /users/{uid}/tracks/{id}/favorites`;
   recents `/users/{uid}/servings/recent`, recommended, `/tracks/{id}/similar`.
 - Headers used by working clients: `Origin/Referer: https://my.brain.fm`, browser UA, JSON content type.
 - Desktop UI: mental-state selector (Focus/Relax/Sleep/Meditate), activity picker, big centered timer,

@@ -185,7 +185,7 @@ async fn set_favorite_uses_post_and_delete() {
     let server = MockServer::start().await;
     for m in ["POST", "DELETE"] {
         Mock::given(method(m))
-            .and(path("/v2/users/u1/tracks/t1/favorites"))
+            .and(path("/v3/users/u1/tracks/t1/favorites"))
             .respond_with(ok(json!({})))
             .expect(1)
             .mount(&server)
@@ -194,4 +194,26 @@ async fn set_favorite_uses_post_and_delete() {
     let c = client(&server);
     c.set_favorite("u1", "t1", true).await.unwrap();
     c.set_favorite("u1", "t1", false).await.unwrap();
+}
+
+#[tokio::test]
+async fn library_endpoints_use_v3() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v3/users/u1/servings/favorites"))
+        .and(query_param("version", "2"))
+        .respond_with(ok(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v3/users/u1/servings/recent"))
+        .and(query_param("platform", "web"))
+        .respond_with(ok(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    c.favorites("u1").await.unwrap();
+    c.recents("u1").await.unwrap();
 }

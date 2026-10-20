@@ -253,13 +253,13 @@ impl ApiClient {
 
     pub async fn favorites(&self, uid: &str) -> ApiResult<Vec<Serving>> {
         let uid = safe_id(uid)?;
-        self.get(2, &format!("/users/{uid}/servings/favorites?version=2"))
+        self.get(3, &format!("/users/{uid}/servings/favorites?version=2"))
             .await
     }
 
     pub async fn recents(&self, uid: &str) -> ApiResult<Vec<Serving>> {
         let uid = safe_id(uid)?;
-        self.get(2, &format!("/users/{uid}/servings/recent?platform=web"))
+        self.get(3, &format!("/users/{uid}/servings/recent?platform=web"))
             .await
     }
 
@@ -268,7 +268,7 @@ impl ApiClient {
         let method = if on { Method::POST } else { Method::DELETE };
         self.send(
             method,
-            2,
+            3,
             &format!("/users/{uid}/tracks/{tid}/favorites"),
             None,
         )
