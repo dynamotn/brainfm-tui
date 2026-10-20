@@ -29,6 +29,17 @@ development headers: `alsa-lib` and `dbus` on Arch, or `libasound2-dev` and
 cargo install --path .
 ```
 
+### Prebuilt binaries
+
+Each `v*` tag publishes binaries for Linux (x86_64, aarch64) and macOS (Apple
+Silicon) on the GitHub Releases page, with a `SHA256SUMS` file. On Linux they
+need `libasound.so.2` and `libdbus-1.so.3` at runtime.
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf brainfm-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+```
+
 ## Log in
 
 ```sh
@@ -115,3 +126,7 @@ cargo test --test player_smoke -- --ignored           # real audio; needs ffmpeg
 prek run --all-files                                  # fmt, clippy, tests
 cargo deny check                                      # advisories, licenses, sources
 ```
+
+To release: bump `version` in `Cargo.toml`, commit, then push a matching tag
+(`git tag v0.2.0 && git push origin v0.2.0`). The Release workflow runs CI,
+checks the tag against `Cargo.toml`, builds and publishes the binaries.
