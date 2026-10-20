@@ -2,5 +2,7 @@ pub mod api;
 pub mod app;
 pub mod cli;
 pub mod config;
+pub mod headless;
+pub mod player;
 pub mod session;
 pub mod timer;

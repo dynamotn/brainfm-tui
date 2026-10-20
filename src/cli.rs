@@ -198,7 +198,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         }
         Command::Whoami => whoami(&store).await,
         Command::List { what, state } => list(&store, what, state).await,
-        Command::Play(_) => bail!("play is not implemented yet"),
+        Command::Play(args) => crate::headless::play(&store, args).await,
     }
 }
 

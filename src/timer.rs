@@ -125,6 +125,17 @@ impl Timer {
     }
 }
 
+/// `MM:SS`, or `H:MM:SS` from one hour up.
+pub fn format_clock(d: Duration) -> String {
+    let s = d.as_secs();
+    let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
+
 /// Parses `"25m/5m"` into an Intervals mode.
 pub fn parse_intervals(s: &str) -> anyhow::Result<TimerMode> {
     let (f, r) = s
@@ -213,6 +224,13 @@ mod tests {
         assert_eq!(t.phase(), Phase::Focus);
         assert_eq!(t.display(), M);
         assert!(!t.is_running());
+    }
+
+    #[test]
+    fn format_clock_handles_hours() {
+        assert_eq!(format_clock(Duration::from_secs(3725)), "1:02:05");
+        assert_eq!(format_clock(Duration::from_secs(65)), "01:05");
+        assert_eq!(format_clock(Duration::from_millis(59_900)), "00:59");
     }
 
     #[test]
