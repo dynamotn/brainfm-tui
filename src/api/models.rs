@@ -222,7 +222,7 @@ mod tests {
             "trackVariation": {"id": "v1", "url": "a.mp3", "lengthInSeconds": null}
         }))
         .unwrap();
-        assert!(s.track.tags.is_empty());
+        assert_eq!(s.track.tags, Vec::<Tag>::new());
         assert_eq!(s.track_variation.length(), Duration::ZERO);
     }
 

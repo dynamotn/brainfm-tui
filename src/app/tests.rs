@@ -199,7 +199,7 @@ fn empty_session_shows_toast() {
         let a = reply(&s, Intent::Now, vec![]);
         update(&mut s, a)
     };
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
     assert_eq!(
         s.toast.as_ref().unwrap().text,
         "No tracks match these filters"
@@ -562,7 +562,7 @@ fn serving_without_url_does_not_hang() {
         let a = reply(&s, Intent::Now, vec![bad]);
         update(&mut s, a)
     };
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
     assert_eq!(s.playback, Playback::Idle);
 }
 
@@ -579,7 +579,7 @@ fn stale_servings_reply_ignored() {
             items: vec![serving("old")],
         }),
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
     assert_eq!(s.now.as_ref().unwrap().track.id, "a");
 }
 
@@ -601,7 +601,7 @@ fn next_reply_after_session_end_ignored() {
             items: vec![serving("b")],
         }),
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
 }
 
 #[test]
@@ -614,7 +614,7 @@ fn events_for_unknown_tracks_ignored() {
             message: "late".into(),
         }),
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
     assert_eq!(s.playback, Playback::Playing);
     update(&mut s, key('n'));
     update(
@@ -658,7 +658,7 @@ fn loading_watchdog_gives_up() {
             items: vec![serving("a")],
         }),
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
 }
 
 // --- review round 2: loading/generation ---
@@ -746,8 +746,9 @@ fn library_pick_cancels_inflight_skip() {
             items: vec![serving("random")],
         }),
     );
-    assert!(
-        fx.is_empty(),
+    assert_eq!(
+        fx,
+        Vec::<Effect>::new(),
         "stale skip must not replace the picked favorite"
     );
     update(
@@ -796,7 +797,7 @@ fn timeout_cancels_engine_load_and_ignores_late_events() {
             message: "late".into(),
         }),
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, Vec::<Effect>::new());
     assert_eq!(s.errors_in_a_row, errors);
     update(
         &mut s,

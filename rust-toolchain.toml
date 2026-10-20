@@ -1,0 +1,7 @@
+# CI and local builds use the same compiler, so new lints arrive only when
+# this pin is bumped on purpose. The MSRV (Cargo.toml rust-version) is
+# checked separately in CI.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
