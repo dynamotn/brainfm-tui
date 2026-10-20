@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use brainfm::api::ApiError;
+use brainfm::api::is_unauthorized;
 use brainfm::{app, cli};
 use clap::Parser;
 
@@ -16,7 +16,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{}", cli::describe_error(&e, during_login));
-            if matches!(e.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)) {
+            if is_unauthorized(&e) {
                 ExitCode::from(2)
             } else {
                 ExitCode::FAILURE

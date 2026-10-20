@@ -1,11 +1,11 @@
 //! `brainfm play`: plays a mental state without the TUI.
 
 use std::io::Write;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 
-use crate::api::{ApiClient, ApiError, EffectLevel, Serving, SessionRequest};
+use crate::api::{ApiClient, EffectLevel, Serving, SessionRequest, is_unauthorized};
 use crate::cli::{PlayArgs, client_from_store, resolve_activity, resolve_state};
 use crate::config::{Config, StatePrefs};
 use crate::player::{self, PlayerCommand, PlayerEvent};
@@ -45,17 +45,17 @@ where
 {
     let mut wait = delay;
     let mut last = None;
-    for _ in 0..attempts {
+    for attempt in 1..=attempts {
         match f().await {
             Ok(v) => return Ok(v),
-            Err(e) if matches!(e.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)) => {
-                return Err(e);
-            }
+            Err(e) if is_unauthorized(&e) => return Err(e),
             Err(e) => {
-                tracing::warn!("retrying after: {e:#}");
+                tracing::warn!("attempt {attempt} failed: {e:#}");
                 last = Some(e);
-                tokio::time::sleep(wait).await;
-                wait *= 2;
+                if attempt < attempts {
+                    tokio::time::sleep(wait).await;
+                    wait *= 2;
+                }
             }
         }
     }
@@ -109,8 +109,8 @@ fn status_line(s: &Serving, pos: Duration, timer: &Timer, paused: bool) -> Strin
     };
     format!(
         "{icon} {} · {} · {effect}  {}/{}  ⏱ {}{phase}",
-        t.name,
-        t.genre().unwrap_or("—"),
+        printable(&t.name),
+        printable(t.genre().unwrap_or("—")),
         format_clock(pos),
         format_clock(s.track_variation.length()),
         format_clock(timer.display()),
@@ -168,85 +168,128 @@ pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
             next_serving(&client, &session.user_id, &req)
         })
     };
+    // Prefetches run in the background so the loop keeps ticking and Ctrl-C
+    // stays responsive while the network is slow.
+    let (prefetch_tx, mut prefetched) = tokio::sync::mpsc::unbounded_channel();
+    let mut prefetching = false;
+    let mut last_tick = Instant::now();
+    let mut fade = Duration::ZERO;
 
-    let result: anyhow::Result<()> = async { loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                player.send(PlayerCommand::Stop { fade: Duration::from_secs(1) });
-                break;
-            }
-            Some(ev) = events.recv() => match ev {
-                PlayerEvent::Started { id } => {
-                    if next.as_ref().is_some_and(|n| n.track.id == id) {
-                        now = next.take().expect("checked");
-                    }
-                    pos = Duration::ZERO;
-                    errors = 0;
-                    timer.start();
+    let result: anyhow::Result<()> = async {
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    fade = Duration::from_secs(1);
+                    break;
                 }
-                PlayerEvent::Position { pos: p, .. } => pos = p,
-                PlayerEvent::NearEnd { .. } => match fetch().await {
-                    Ok(s) => {
-                        player.send(command_for(&s, true)?);
-                        next = Some(s);
+                Some(ev) = events.recv() => match ev {
+                    PlayerEvent::Started { id } => {
+                        if next.as_ref().is_some_and(|n| n.track.id == id) {
+                            now = next.take().expect("checked");
+                        }
+                        pos = Duration::ZERO;
+                        errors = 0;
+                        timer.start();
                     }
-                    // Not fatal: another attempt is made when this track ends.
-                    Err(e) if !matches!(e.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)) => {
-                        tracing::warn!("prefetch failed: {e:#}");
+                    PlayerEvent::Position { pos: p, .. } => pos = p,
+                    PlayerEvent::NearEnd { .. } => {
+                        if next.is_none() && !prefetching {
+                            prefetching = true;
+                            let (c, uid, r, tx) =
+                                (client.clone(), session.user_id.clone(), req.clone(), prefetch_tx.clone());
+                            tokio::spawn(async move {
+                                let s = retry(RETRIES, RETRY_DELAY, || next_serving(&c, &uid, &r)).await;
+                                let _ = tx.send(s);
+                            });
+                        }
                     }
-                    Err(e) => return Err(e),
-                },
-                PlayerEvent::Ended { .. } => {
-                    if next.is_none() {
-                        now = fetch().await?;
+                    PlayerEvent::Ended { .. } => {
+                        if next.is_none() {
+                            let Some(s) = or_ctrl_c(fetch()).await? else {
+                                fade = Duration::ZERO;
+                                break;
+                            };
+                            now = s;
+                            player.send(command_for(&now, false)?);
+                        }
+                    }
+                    PlayerEvent::Error { id, message } => {
+                        if !error_needs_reload(&id, &mut next) {
+                            continue;
+                        }
+                        errors += 1;
+                        let message = printable(&message);
+                        if errors >= MAX_CONSECUTIVE_ERRORS {
+                            bail!("{message} (giving up after {errors} failed tracks)");
+                        }
+                        writeln!(out, "\r\x1b[2K! {message}, skipping")?;
+                        let Some(s) = or_ctrl_c(fetch()).await? else {
+                            fade = Duration::ZERO;
+                            break;
+                        };
+                        now = s;
                         player.send(command_for(&now, false)?);
                     }
+                },
+                Some(r) = prefetched.recv() => {
+                    prefetching = false;
+                    match r {
+                        Ok(s) => {
+                            player.send(command_for(&s, true)?);
+                            next = Some(s);
+                        }
+                        Err(e) if is_unauthorized(&e) => return Err(e),
+                        // Not fatal: another attempt is made when this track ends.
+                        Err(e) => tracing::warn!("prefetch failed: {e:#}"),
+                    }
                 }
-                PlayerEvent::Error { id, message } => {
-                    if !error_needs_reload(&id, &mut next) {
-                        continue;
+                _ = ticker.tick() => {
+                    let now_tick = Instant::now();
+                    let dt = now_tick - last_tick;
+                    last_tick = now_tick;
+                    match timer.tick(dt) {
+                        Some(TimerEvent::Finished) => {
+                            fade = Duration::from_secs(3);
+                            break;
+                        }
+                        Some(TimerEvent::PhaseChanged(phase)) => {
+                            player.send(PlayerCommand::Chime);
+                            paused = phase == Phase::Rest;
+                            player.send(if paused { PlayerCommand::Pause } else { PlayerCommand::Play });
+                        }
+                        None => {}
                     }
-                    errors += 1;
-                    if errors >= MAX_CONSECUTIVE_ERRORS {
-                        bail!("{message} (giving up after {errors} failed tracks)");
-                    }
-                    writeln!(out, "\r\x1b[2K! {message}, skipping")?;
-                    now = fetch().await?;
-                    player.send(command_for(&now, false)?);
+                    write!(out, "\r\x1b[2K{}", status_line(&now, pos, &timer, paused))?;
+                    out.flush()?;
                 }
-            },
-            _ = ticker.tick() => {
-                match timer.tick(TICK) {
-                    Some(TimerEvent::Finished) => {
-                        player.send(PlayerCommand::Stop { fade: Duration::from_secs(3) });
-                        break;
-                    }
-                    Some(TimerEvent::PhaseChanged(phase)) => {
-                        player.send(PlayerCommand::Chime);
-                        paused = phase == Phase::Rest;
-                        player.send(if paused { PlayerCommand::Pause } else { PlayerCommand::Play });
-                    }
-                    None => {}
-                }
-                write!(out, "\r\x1b[2K{}", status_line(&now, pos, &timer, paused))?;
-                out.flush()?;
             }
         }
-    } Ok(()) }.await;
+        Ok(())
+    }
+    .await;
     // Clear the status line so any error prints on a line of its own.
     write!(out, "\r\x1b[2K")?;
-    if result.is_err() {
-        player.send(PlayerCommand::Stop {
-            fade: Duration::ZERO,
-        });
-        return result;
-    }
-    // Give the engine time to finish its fade before the process exits.
-    tokio::time::sleep(Duration::from_millis(3200)).await;
+    player.send(PlayerCommand::Stop { fade });
+    result?;
+    // Let the engine finish its fade before the process exits.
+    tokio::time::sleep(fade + Duration::from_millis(200)).await;
     if timer.display().is_zero() && !matches!(timer.mode(), TimerMode::Infinite) {
         eprintln!("Session complete");
     }
     Ok(())
+}
+
+/// Awaits `fut`, or returns `None` if Ctrl-C arrives first.
+async fn or_ctrl_c<T>(fut: impl Future<Output = anyhow::Result<T>>) -> anyhow::Result<Option<T>> {
+    tokio::select! {
+        r = fut => r.map(Some),
+        _ = tokio::signal::ctrl_c() => Ok(None),
+    }
+}
+
+/// Drops control characters so API text cannot drive the terminal.
+pub fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 #[cfg(test)]
@@ -283,6 +326,29 @@ mod tests {
         .unwrap();
         assert_eq!(out, 7);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_does_not_sleep_after_last_attempt() {
+        let start = std::time::Instant::now();
+        let r: anyhow::Result<()> = retry(2, Duration::from_millis(200), || async {
+            anyhow::bail!("down")
+        })
+        .await;
+        assert!(r.is_err());
+        assert!(
+            start.elapsed() < Duration::from_millis(350),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn status_text_strips_control_characters() {
+        assert_eq!(
+            printable("Asc\x1b]52;c;ZXZpbA==\x07ent\n"),
+            "Asc]52;c;ZXZpbA==ent"
+        );
     }
 
     #[tokio::test]

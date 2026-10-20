@@ -34,6 +34,12 @@ pub enum ApiError {
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
+/// True when `e`, or anything it wraps, is an expired or missing session.
+pub fn is_unauthorized(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| matches!(c.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)))
+}
+
 /// reqwest's own message hides the cause (timeout, reset, TLS…); append it.
 fn with_causes(e: &reqwest::Error) -> String {
     let mut out = e.to_string();
@@ -337,5 +343,18 @@ impl ApiClient {
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_unauthorized_sees_through_anyhow_context() {
+        use anyhow::Context;
+        let e: anyhow::Result<()> = Err(ApiError::Unauthorized).context("loading states");
+        assert!(is_unauthorized(&e.unwrap_err()));
+        assert!(!is_unauthorized(&anyhow::anyhow!("other")));
     }
 }

@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use url::Url;
 
 use crate::api::client::DEFAULT_BASE;
-use crate::api::{Activity, ApiClient, ApiError, EffectLevel, MentalState};
+use crate::api::{Activity, ApiClient, EffectLevel, MentalState, is_unauthorized};
 use crate::session::{Session, SessionStore};
 
 /// Listen to Brain.fm from the terminal.
@@ -98,12 +98,13 @@ pub fn resolve_activity<'a>(acts: &'a [Activity], q: &str) -> Option<&'a Activit
 /// User-facing text for a command error; a 401 means different things
 /// during `login` and everywhere else.
 pub fn describe_error(e: &anyhow::Error, during_login: bool) -> String {
-    match e.downcast_ref::<ApiError>() {
-        Some(ApiError::Unauthorized) if during_login => {
-            "Wrong email or password (or an invalid token)".to_owned()
-        }
-        Some(ApiError::Unauthorized) => "Session expired — run `brainfm login`".to_owned(),
-        _ => format!("error: {e:#}"),
+    if !is_unauthorized(e) {
+        return crate::headless::printable(&format!("error: {e:#}"));
+    }
+    if during_login {
+        "Wrong email or password (or an invalid token)".to_owned()
+    } else {
+        "Session expired — run `brainfm login`".to_owned()
     }
 }
 
@@ -182,7 +183,7 @@ async fn list(store: &SessionStore, what: ListWhat, state: Option<String>) -> an
     let states = client.mental_states().await?;
     if let ListWhat::States = what {
         for s in &states {
-            println!("{}\t{}", s.id, s.display_value);
+            println!("{}\t{}", s.id, crate::headless::printable(&s.display_value));
         }
         return Ok(());
     }
@@ -191,12 +192,12 @@ async fn list(store: &SessionStore, what: ListWhat, state: Option<String>) -> an
     match what {
         ListWhat::Activities => {
             for a in client.activities(&st.id).await? {
-                println!("{}\t{}", a.id, a.display_value);
+                println!("{}\t{}", a.id, crate::headless::printable(&a.display_value));
             }
         }
         ListWhat::Genres => {
             for g in client.genres(&st.id).await? {
-                println!("{g}");
+                println!("{}", crate::headless::printable(&g));
             }
         }
         ListWhat::States => unreachable!(),
