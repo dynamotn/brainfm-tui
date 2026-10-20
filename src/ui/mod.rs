@@ -2,6 +2,7 @@
 
 mod footer;
 mod header;
+mod overlay;
 mod panel;
 mod player;
 pub mod theme;
@@ -70,6 +71,10 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) {
         );
     }
     footer::draw(f, foot, s, t);
+
+    if let Some(o) = &s.overlay {
+        overlay::draw(f, o, s, t);
+    }
 }
 
 fn centered_line(area: Rect, width: u16) -> Rect {

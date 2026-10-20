@@ -129,3 +129,67 @@ fn renders_toast() {
     ));
     assert!(text(&render(&s, 80, 24)).contains("No tracks match these filters"));
 }
+
+#[test]
+fn renders_library_panel() {
+    let out = text(&render(&playing(), 140, 40));
+    assert!(out.contains("Favorites") && out.contains("Lumen"));
+    assert!(out.contains("Recent") && out.contains("Drift"));
+}
+
+#[test]
+fn renders_explore_panel_activities() {
+    let mut s = playing();
+    s.panel.tab = crate::app::state::PanelTab::Explore;
+    let out = text(&render(&s, 140, 40));
+    assert!(out.contains("Learning"));
+}
+
+#[test]
+fn renders_genres_overlay() {
+    let mut s = ready();
+    update(
+        &mut s,
+        Action::Key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('g'),
+        )),
+    );
+    let t = render(&s, 100, 30);
+    let out = text(&t);
+    assert!(out.contains("Genres") && out.contains("Piano") && out.contains("Lofi"));
+    insta::assert_snapshot!(t.backend());
+}
+
+#[test]
+fn renders_login_overlay_masks_password() {
+    let mut s = AppState::new(Config::default(), true, None);
+    if let Some(crate::app::state::Overlay::Login {
+        email, password, ..
+    }) = &mut s.overlay
+    {
+        *email = "me@example.com".into();
+        *password = "hunter2".into();
+    }
+    let t = render(&s, 100, 30);
+    let out = text(&t);
+    assert!(out.contains("me@example.com"));
+    assert!(!out.contains("hunter2"));
+    assert!(out.contains("•••••••"));
+    insta::assert_snapshot!(t.backend());
+}
+
+#[test]
+fn renders_help_overlay() {
+    let mut s = ready();
+    s.overlay = Some(crate::app::state::Overlay::Help);
+    let out = text(&render(&s, 100, 30));
+    assert!(out.contains("Keys") && out.contains("dislike"));
+}
+
+#[test]
+fn renders_timer_overlay() {
+    let mut s = ready();
+    s.overlay = Some(crate::app::state::Overlay::Timer { sel: 1 });
+    let out = text(&render(&s, 100, 30));
+    assert!(out.contains("30 min") && out.contains("Intervals 25/5"));
+}
