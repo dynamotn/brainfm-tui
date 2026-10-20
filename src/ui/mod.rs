@@ -5,7 +5,7 @@ mod header;
 mod overlay;
 mod panel;
 mod player;
-pub mod theme;
+pub(crate) mod theme;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -13,14 +13,14 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::state::AppState;
-pub use theme::Theme;
+pub(crate) use theme::Theme;
 
-pub const MIN_WIDTH: u16 = 60;
-pub const MIN_HEIGHT: u16 = 20;
+pub(crate) const MIN_WIDTH: u16 = 60;
+pub(crate) const MIN_HEIGHT: u16 = 20;
 const PANEL_WIDTH: u16 = 34;
 const PANEL_MIN_SCREEN: u16 = 100;
 
-pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) {
+pub(crate) fn draw(f: &mut Frame<'_>, s: &AppState, t: &Theme) {
     let area = f.area();
     f.render_widget(Block::new().style(t.base()), area);
 
@@ -67,7 +67,7 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) {
             Paragraph::new(format!(" {} ", msg.text))
                 .alignment(Alignment::Center)
                 .style(Style::new().fg(t.text).bg(t.surface_hi)),
-            centered_line(toast, msg.text.chars().count() as u16 + 2),
+            centered_line(toast, to_u16(msg.text.chars().count()).saturating_add(2)),
         );
     }
     footer::draw(f, foot, s, t);
@@ -75,6 +75,11 @@ pub fn draw(f: &mut Frame, s: &AppState, t: &Theme) {
     if let Some(o) = &s.overlay {
         overlay::draw(f, o, s, t);
     }
+}
+
+/// Terminal sizes fit in `u16`; anything longer is clipped to the screen anyway.
+fn to_u16(n: usize) -> u16 {
+    u16::try_from(n).unwrap_or(u16::MAX)
 }
 
 fn centered_line(area: Rect, width: u16) -> Rect {

@@ -42,6 +42,7 @@ impl EffectLevel {
     pub const ALL: [EffectLevel; 3] = [EffectLevel::Low, EffectLevel::Medium, EffectLevel::High];
 
     /// Maps a track variation's 0–1 level the way the web app displays it.
+    #[must_use]
     pub fn from_value(v: f64) -> Self {
         if v <= 0.33 {
             Self::Low
@@ -52,6 +53,7 @@ impl EffectLevel {
         }
     }
 
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Low => "Low",
@@ -80,6 +82,7 @@ pub struct Track {
 }
 
 impl Track {
+    #[must_use]
     pub fn genre(&self) -> Option<&str> {
         self.tags
             .iter()
@@ -87,6 +90,7 @@ impl Track {
             .map(|t| t.value.as_str())
     }
 
+    #[must_use]
     pub fn moods(&self) -> Vec<&str> {
         self.tags
             .iter()
@@ -111,6 +115,7 @@ pub struct TrackVariation {
 }
 
 impl TrackVariation {
+    #[must_use]
     pub fn stream_url(&self) -> Option<String> {
         self.tokened_url
             .clone()
@@ -118,6 +123,7 @@ impl TrackVariation {
             .or_else(|| self.url.as_ref().map(|u| format!("{AUDIO_BASE}{u}")))
     }
 
+    #[must_use]
     pub fn length(&self) -> Duration {
         Duration::try_from_secs_f64(self.length_in_seconds).unwrap_or_default()
     }
@@ -146,6 +152,7 @@ pub struct SessionRequest {
 }
 
 impl SessionRequest {
+    #[must_use]
     pub fn new(activity_id: &str, effects: Vec<EffectLevel>, genres: Vec<String>) -> Self {
         Self {
             dynamic_activity_id: activity_id.to_owned(),

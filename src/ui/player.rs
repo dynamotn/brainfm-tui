@@ -14,7 +14,7 @@ use crate::timer::{Phase, TimerMode, format_clock};
 
 const FULL_TIMER_MIN_HEIGHT: u16 = 26;
 
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+pub(super) fn draw(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let area = area.inner(ratatui::layout::Margin {
         horizontal: 3,
         vertical: 1,
@@ -68,7 +68,7 @@ fn effect_meter(effects: &[EffectLevel], t: &Theme) -> Vec<Span<'static>> {
         Some(EffectLevel::Medium) => 2,
         Some(EffectLevel::High) => 3,
     };
-    let mut spans: Vec<Span> = (0..3)
+    let mut spans: Vec<Span<'_>> = (0..3)
         .map(|i| {
             if i < filled {
                 Span::styled("■", Style::new().fg(t.gradient(f64::from(i) / 2.0)))
@@ -90,7 +90,7 @@ fn effect_meter(effects: &[EffectLevel], t: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-fn draw_filters(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_filters(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let prefs = s.current_prefs();
     let activity = s
         .current_activity_name()
@@ -112,7 +112,7 @@ fn draw_filters(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_timer(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, height: u16) {
+fn draw_timer(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme, height: u16) {
     let size = if height >= 8 {
         PixelSize::Full
     } else {
@@ -128,7 +128,7 @@ fn draw_timer(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, height: u16) {
     f.render_widget(big, area);
 }
 
-fn draw_status(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_status(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let rest =
         matches!(s.timer.mode(), TimerMode::Intervals { .. }) && s.timer.phase() == Phase::Rest;
     let (text, style) = match s.playback {
@@ -149,7 +149,7 @@ fn draw_status(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     );
 }
 
-fn draw_chips(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_chips(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let mode = s.timer.mode();
     let chip = |label: String, on: bool| {
         if on {
@@ -185,12 +185,11 @@ fn draw_chips(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-fn draw_track(f: &mut Frame, name: Rect, meta: Rect, s: &AppState, t: &Theme) {
+fn draw_track(f: &mut Frame<'_>, name: Rect, meta: Rect, s: &AppState, t: &Theme) {
     let Some(now) = &s.now else {
         let state = s
             .current_state()
-            .map(|st| st.display_value.as_str())
-            .unwrap_or("Brain.fm");
+            .map_or("Brain.fm", |st| st.display_value.as_str());
         f.render_widget(
             Paragraph::new(format!("{state} music, made for your brain"))
                 .alignment(Alignment::Center)
@@ -225,7 +224,7 @@ fn draw_track(f: &mut Frame, name: Rect, meta: Rect, s: &AppState, t: &Theme) {
     );
 }
 
-fn draw_progress(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_progress(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let len = s
         .now
         .as_ref()
@@ -238,8 +237,10 @@ fn draw_progress(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     } else {
         (s.position.as_secs_f64() / len.as_secs_f64()).min(1.0)
     };
+    // `ratio` is clamped to 0..=1, so the product fits in `bar_width`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let filled = (ratio * bar_width as f64).round() as usize;
-    let mut spans: Vec<Span> = (0..bar_width)
+    let mut spans: Vec<Span<'_>> = (0..bar_width)
         .map(|i| {
             if i < filled {
                 let color = t.gradient(i as f64 / bar_width.max(1) as f64);
@@ -256,7 +257,7 @@ fn draw_progress(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     );
 }
 
-fn draw_controls(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_controls(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let g = &t.glyphs;
     let playing = s.playback == Playback::Playing;
     let fav = s

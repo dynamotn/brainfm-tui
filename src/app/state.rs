@@ -27,6 +27,7 @@ pub enum PanelTab {
 impl PanelTab {
     pub const ALL: [PanelTab; 3] = [PanelTab::Library, PanelTab::Explore, PanelTab::Profile];
 
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Library => "Library",
@@ -77,6 +78,7 @@ pub enum Overlay {
 }
 
 impl Overlay {
+    #[must_use]
     pub fn login() -> Self {
         Self::Login {
             email: String::new(),
@@ -133,6 +135,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[must_use]
     pub fn new(config: Config, config_writable: bool, user_id: Option<String>) -> Self {
         Self {
             states: Vec::new(),
@@ -170,10 +173,12 @@ impl AppState {
         }
     }
 
+    #[must_use]
     pub fn current_state(&self) -> Option<&MentalState> {
         self.states.get(self.state_idx)
     }
 
+    #[must_use]
     pub fn current_prefs(&self) -> StatePrefs {
         self.current_state()
             .and_then(|s| self.config.states.get(&s.id))
@@ -187,6 +192,7 @@ impl AppState {
     }
 
     /// The activity the next session plays: saved choice, then the state's default.
+    #[must_use]
     pub fn current_activity_id(&self) -> Option<String> {
         let state = self.current_state()?;
         self.current_prefs()
@@ -195,6 +201,7 @@ impl AppState {
             .or_else(|| self.activities.first().map(|a| a.id.clone()))
     }
 
+    #[must_use]
     pub fn current_activity_name(&self) -> Option<String> {
         let id = self.current_activity_id()?;
         self.activities
@@ -208,6 +215,7 @@ impl AppState {
             .map(|a| a.display_value.clone())
     }
 
+    #[must_use]
     pub fn session_request(&self) -> Option<SessionRequest> {
         let prefs = self.current_prefs();
         Some(SessionRequest::new(
@@ -222,6 +230,7 @@ impl AppState {
         self.panel.favorites.iter().chain(&self.panel.recents)
     }
 
+    #[must_use]
     pub fn timer_options(&self) -> Vec<(String, TimerMode)> {
         let min = |m: u32| Duration::from_secs(u64::from(m) * 60);
         let mut opts = vec![

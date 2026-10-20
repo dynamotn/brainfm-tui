@@ -11,7 +11,7 @@ use crate::app::state::AppState;
 
 const LOGO: &str = " brain.fm ";
 
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+pub(super) fn draw(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let mut tabs = vec![Span::styled(LOGO, t.accent()), Span::raw("   ")];
     let mut underline = vec![Span::raw(" ".repeat(LOGO.len() + 3))];
 

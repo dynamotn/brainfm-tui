@@ -10,7 +10,7 @@ use super::Theme;
 use crate::api::Serving;
 use crate::app::state::{AppState, PanelTab};
 
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+pub(super) fn draw(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let block = Block::new()
         .borders(Borders::LEFT)
         .border_style(Style::new().fg(t.surface_hi))
@@ -45,10 +45,10 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     };
     // Keep the selected row on screen.
     let skip = (s.panel.selected + 4).saturating_sub(body.height as usize);
-    f.render_widget(Paragraph::new(lines).scroll((skip as u16, 0)), body);
+    f.render_widget(Paragraph::new(lines).scroll((super::to_u16(skip), 0)), body);
 }
 
-fn row<'a>(text: String, extra: Option<&str>, selected: bool, t: &Theme, width: u16) -> Line<'a> {
+fn row<'a>(text: &str, extra: Option<&str>, selected: bool, t: &Theme, width: u16) -> Line<'a> {
     let marker = if selected { "› " } else { "  " };
     let base = if selected {
         Style::new()
@@ -70,7 +70,7 @@ fn row<'a>(text: String, extra: Option<&str>, selected: bool, t: &Theme, width: 
     Line::from(spans)
 }
 
-fn heading<'a>(text: String, t: &Theme) -> Line<'a> {
+fn heading<'a>(text: &str, t: &Theme) -> Line<'a> {
     Line::from(Span::styled(format!(" {text}"), t.accent()))
 }
 
@@ -89,7 +89,7 @@ fn servings<'a>(
         .enumerate()
         .map(|(i, sv)| {
             row(
-                sv.track.name.clone(),
+                &sv.track.name,
                 sv.track.genre(),
                 s.panel.selected == offset + i,
                 t,
@@ -101,10 +101,10 @@ fn servings<'a>(
 
 fn library<'a>(s: &AppState, t: &Theme, width: u16) -> Vec<Line<'a>> {
     let g = &t.glyphs;
-    let mut lines = vec![heading(format!("{} Favorites", g.favorite_header), t)];
+    let mut lines = vec![heading(&format!("{} Favorites", g.favorite_header), t)];
     lines.extend(servings(&s.panel.favorites, 0, s, t, width));
     lines.push(Line::default());
-    lines.push(heading(format!("{} Recent", g.recent_header), t));
+    lines.push(heading(&format!("{} Recent", g.recent_header), t));
     lines.extend(servings(
         &s.panel.recents,
         s.panel.favorites.len(),
@@ -117,7 +117,7 @@ fn library<'a>(s: &AppState, t: &Theme, width: u16) -> Vec<Line<'a>> {
 
 fn explore<'a>(s: &AppState, t: &Theme, width: u16) -> Vec<Line<'a>> {
     let current = s.current_activity_id();
-    let mut lines = vec![heading("Activities".into(), t)];
+    let mut lines = vec![heading("Activities", t)];
     if s.activities.is_empty() {
         lines.push(Line::from(Span::styled("   loading…", t.dim())));
     }
@@ -127,29 +127,22 @@ fn explore<'a>(s: &AppState, t: &Theme, width: u16) -> Vec<Line<'a>> {
         } else {
             None
         };
-        lines.push(row(
-            a.display_value.clone(),
-            mark,
-            s.panel.selected == i,
-            t,
-            width,
-        ));
+        lines.push(row(&a.display_value, mark, s.panel.selected == i, t, width));
     }
     lines
 }
 
 fn profile<'a>(s: &AppState, t: &Theme) -> Vec<Line<'a>> {
     let config = crate::config::Config::default_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "unknown".into());
+        .map_or_else(|_| "unknown".into(), |p| p.display().to_string());
     vec![
-        heading("Account".into(), t),
+        heading("Account", t),
         Line::from(Span::styled(
             format!("   {}", s.user_id.as_deref().unwrap_or("not logged in")),
             Style::new().fg(t.text),
         )),
         Line::default(),
-        heading("Config".into(), t),
+        heading("Config", t),
         Line::from(Span::styled(format!("   {config}"), t.dim())),
         Line::default(),
         Line::from(Span::styled("   brainfm logout  to sign out", t.dim())),

@@ -182,21 +182,18 @@ fn abort_loading(s: &mut AppState, fx: &mut Vec<Effect>) {
 
 fn load(s: &mut AppState, serving: Serving, fx: &mut Vec<Effect>) {
     let v = &serving.track_variation;
-    match v.stream_url() {
-        Some(url) => {
-            fx.push(Effect::Player(PlayerCommand::Load {
-                id: serving.track.id.clone(),
-                url,
-                length: v.length(),
-            }));
-            s.playback = Playback::Loading;
-            s.pending = Some(serving);
-        }
-        None => {
-            s.errors_in_a_row += 1;
-            abort_loading(s, fx);
-            toast(s, "That track has no audio URL");
-        }
+    if let Some(url) = v.stream_url() {
+        fx.push(Effect::Player(PlayerCommand::Load {
+            id: serving.track.id.clone(),
+            url,
+            length: v.length(),
+        }));
+        s.playback = Playback::Loading;
+        s.pending = Some(serving);
+    } else {
+        s.errors_in_a_row += 1;
+        abort_loading(s, fx);
+        toast(s, "That track has no audio URL");
     }
 }
 
@@ -532,7 +529,7 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
                 s.next = None;
             } else if s.next.as_ref().is_some_and(|n| n.track.id == id) {
                 s.now = s.next.take();
-            } else if !s.now.as_ref().is_some_and(|n| n.track.id == id) {
+            } else if s.now.as_ref().is_none_or(|n| n.track.id != id) {
                 return;
             }
             s.playback = Playback::Playing;
@@ -563,7 +560,7 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
                 return;
             }
             let was_pending = s.pending.as_ref().is_some_and(|p| p.track.id == id);
-            if !was_pending && !s.now.as_ref().is_some_and(|n| n.track.id == id) {
+            if !was_pending && s.now.as_ref().is_none_or(|n| n.track.id != id) {
                 return;
             }
             if was_pending {
@@ -657,41 +654,45 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
             },
             fx,
         ),
-        ApiReply::Failed { what, error } => match error {
-            ApiErrorKind::Unauthorized => {
+        ApiReply::Failed { what, error } => on_failed(s, what, error, fx),
+    }
+}
+
+fn on_failed(s: &mut AppState, what: &'static str, error: ApiErrorKind, fx: &mut Vec<Effect>) {
+    match error {
+        ApiErrorKind::Unauthorized => {
+            abort_loading(s, fx);
+            if s.playback == Playback::Playing {
+                fx.push(Effect::Player(PlayerCommand::Pause));
+                s.timer.pause();
+                s.playback = Playback::Paused;
+            }
+            let message = (what == "login").then(|| "Wrong email or password".to_owned());
+            match &mut s.overlay {
+                Some(Overlay::Login { error, .. }) => {
+                    *error = message.or(Some("Session expired — log in again".into()));
+                }
+                _ => {
+                    s.overlay = Some(Overlay::Login {
+                        email: String::new(),
+                        password: String::new(),
+                        field: LoginField::Email,
+                        error: Some("Session expired — log in again".into()),
+                    });
+                }
+            }
+        }
+        ApiErrorKind::Other(msg) => {
+            if let Some(Overlay::Login { error, .. }) = &mut s.overlay
+                && what == "login"
+            {
+                *error = Some(msg);
+                return;
+            }
+            if what == "session" {
                 abort_loading(s, fx);
-                if s.playback == Playback::Playing {
-                    fx.push(Effect::Player(PlayerCommand::Pause));
-                    s.timer.pause();
-                    s.playback = Playback::Paused;
-                }
-                let message = (what == "login").then(|| "Wrong email or password".to_owned());
-                match &mut s.overlay {
-                    Some(Overlay::Login { error, .. }) => {
-                        *error = message.or(Some("Session expired — log in again".into()))
-                    }
-                    _ => {
-                        s.overlay = Some(Overlay::Login {
-                            email: String::new(),
-                            password: String::new(),
-                            field: LoginField::Email,
-                            error: Some("Session expired — log in again".into()),
-                        })
-                    }
-                }
             }
-            ApiErrorKind::Other(msg) => {
-                if let Some(Overlay::Login { error, .. }) = &mut s.overlay
-                    && what == "login"
-                {
-                    *error = Some(msg);
-                    return;
-                }
-                if what == "session" {
-                    abort_loading(s, fx);
-                }
-                toast(s, format!("Could not load {what}: {msg}"));
-            }
-        },
+            toast(s, format!("Could not load {what}: {msg}"));
+        }
     }
 }

@@ -84,12 +84,14 @@ impl From<EffectArg> for EffectLevel {
     }
 }
 
+#[must_use]
 pub fn resolve_state<'a>(states: &'a [MentalState], q: &str) -> Option<&'a MentalState> {
     states
         .iter()
         .find(|s| s.id.eq_ignore_ascii_case(q) || s.display_value.eq_ignore_ascii_case(q))
 }
 
+#[must_use]
 pub fn resolve_activity<'a>(acts: &'a [Activity], q: &str) -> Option<&'a Activity> {
     acts.iter()
         .find(|a| a.id.eq_ignore_ascii_case(q) || a.display_value.eq_ignore_ascii_case(q))
@@ -97,6 +99,7 @@ pub fn resolve_activity<'a>(acts: &'a [Activity], q: &str) -> Option<&'a Activit
 
 /// User-facing text for a command error; a 401 means different things
 /// during `login` and everywhere else.
+#[must_use]
 pub fn describe_error(e: &anyhow::Error, during_login: bool) -> String {
     if !is_unauthorized(e) {
         return crate::headless::printable(&format!("error: {e:#}"));
@@ -119,7 +122,7 @@ pub fn client_from_store(store: &SessionStore) -> anyhow::Result<(ApiClient, Ses
         .context("Not logged in — run `brainfm login`")?;
     let writer = store.clone();
     let client = ApiClient::new(base_url())
-        .with_token(session.token.clone())
+        .with_token(&session.token)
         .on_token_refresh(move |t| writer.refresh_in_background(t));
     Ok((client, session))
 }
@@ -141,10 +144,7 @@ async fn login(store: &SessionStore, paste_token: bool) -> anyhow::Result<()> {
             bail!("no token given");
         }
         // Validate before saving so a bad paste never replaces a good session.
-        ApiClient::new(base_url())
-            .with_token(t.clone())
-            .me()
-            .await?;
+        ApiClient::new(base_url()).with_token(&t).me().await?;
         t
     } else {
         let email = prompt("Email: ")?;

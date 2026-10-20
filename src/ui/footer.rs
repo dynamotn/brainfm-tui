@@ -24,7 +24,7 @@ const HINTS: &[(&str, &str)] = &[
     ("q", "quit"),
 ];
 
-pub fn draw(f: &mut Frame, area: Rect, _s: &AppState, t: &Theme) {
+pub(super) fn draw(f: &mut Frame<'_>, area: Rect, _s: &AppState, t: &Theme) {
     let mut spans = vec![Span::raw(" ")];
     let mut width = 1;
     for (k, label) in HINTS {

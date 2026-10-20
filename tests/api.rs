@@ -7,10 +7,10 @@ use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn client(server: &MockServer) -> ApiClient {
-    ApiClient::new(Url::parse(&server.uri()).unwrap()).with_token("t0".into())
+    ApiClient::new(Url::parse(&server.uri()).expect("mock server uri")).with_token("t0")
 }
 
-fn ok(result: serde_json::Value) -> ResponseTemplate {
+fn ok(result: &serde_json::Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({"status": 200, "result": result}))
 }
 
@@ -22,7 +22,7 @@ async fn sends_browser_headers_and_bearer() {
         .and(header("origin", "https://my.brain.fm"))
         .and(header("referer", "https://my.brain.fm/"))
         .and(header("authorization", "Bearer t0"))
-        .respond_with(ok(json!([{"id": "focus", "displayValue": "Focus"}])))
+        .respond_with(ok(&json!([{"id": "focus", "displayValue": "Focus"}])))
         .expect(1)
         .mount(&server)
         .await;
@@ -98,11 +98,11 @@ async fn login_posts_email_and_password() {
     Mock::given(method("POST"))
         .and(path("/v2/auth/email-login"))
         .and(body_json(json!({"email": "a@b.c", "password": "pw"})))
-        .respond_with(ok(json!("jwt")))
+        .respond_with(ok(&json!("jwt")))
         .expect(1)
         .mount(&server)
         .await;
-    let c = ApiClient::new(Url::parse(&server.uri()).unwrap());
+    let c = ApiClient::new(Url::parse(&server.uri()).expect("mock server uri"));
     assert_eq!(c.email_login("a@b.c", "pw").await.unwrap(), "jwt");
     assert_eq!(c.token().as_deref(), Some("jwt"));
 }
@@ -116,7 +116,7 @@ async fn start_session_posts_body_and_returns_servings() {
         .and(body_json(json!({
             "dynamicActivityId": "a1", "version": 3, "neuralEffectLevels": ["High"]
         })))
-        .respond_with(ok(json!({"servings": [{
+        .respond_with(ok(&json!({"servings": [{
             "track": {"id": "t1", "name": "Ascent", "tags": []},
             "trackVariation": {"id": "v1", "tokenedUrl": "https://cdn/x.mp3",
                                "lengthInSeconds": 300}
@@ -134,9 +134,11 @@ async fn genres_accept_strings_or_objects() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v3/mentalStates/dynamic/focus/genres"))
-        .respond_with(ok(
-            json!(["Piano", {"name": "Electronic"}, {"displayValue": "Lofi"}]),
-        ))
+        .respond_with(ok(&json!([
+            "Piano",
+            {"name": "Electronic"},
+            {"displayValue": "Lofi"}
+        ])))
         .mount(&server)
         .await;
     let genres = client(&server).genres("focus").await.unwrap();
@@ -147,7 +149,7 @@ async fn genres_accept_strings_or_objects() {
 async fn null_result_is_decode_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ok(serde_json::Value::Null))
+        .respond_with(ok(&serde_json::Value::Null))
         .mount(&server)
         .await;
     let err = client(&server).mental_states().await.unwrap_err();
@@ -158,7 +160,7 @@ async fn null_result_is_decode_error() {
 async fn rejects_unsafe_ids() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ok(json!([])))
+        .respond_with(ok(&json!([])))
         .expect(0)
         .mount(&server)
         .await;
@@ -173,7 +175,7 @@ async fn dislike_posts_track_id() {
         .and(path("/v2/users/u1/dislikes"))
         .and(query_param("version", "3"))
         .and(body_json(json!({"trackId": "t1"})))
-        .respond_with(ok(json!({})))
+        .respond_with(ok(&json!({})))
         .expect(1)
         .mount(&server)
         .await;
@@ -186,7 +188,7 @@ async fn set_favorite_uses_post_and_delete() {
     for m in ["POST", "DELETE"] {
         Mock::given(method(m))
             .and(path("/v3/users/u1/tracks/t1/favorites"))
-            .respond_with(ok(json!({})))
+            .respond_with(ok(&json!({})))
             .expect(1)
             .mount(&server)
             .await;
@@ -202,14 +204,14 @@ async fn library_endpoints_use_v3() {
     Mock::given(method("GET"))
         .and(path("/v3/users/u1/servings/favorites"))
         .and(query_param("version", "2"))
-        .respond_with(ok(json!([])))
+        .respond_with(ok(&json!([])))
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/v3/users/u1/servings/recent"))
         .and(query_param("platform", "web"))
-        .respond_with(ok(json!([])))
+        .respond_with(ok(&json!([])))
         .expect(1)
         .mount(&server)
         .await;
@@ -223,7 +225,7 @@ async fn genres_accept_base_and_nature_groups() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v3/mentalStates/dynamic/focus/genres"))
-        .respond_with(ok(json!({
+        .respond_with(ok(&json!({
             "baseGenreNames": ["Piano", "Electronic"],
             "natureGenreNames": ["Rain"]
         })))
@@ -242,9 +244,10 @@ async fn library_accepts_wrapped_servings() {
     });
     Mock::given(method("GET"))
         .and(path("/v3/users/u1/servings/favorites"))
-        .respond_with(ok(
-            json!([{"serving": serving, "genreName": "Piano"}, serving]),
-        ))
+        .respond_with(ok(&json!([
+            {"serving": serving, "genreName": "Piano"},
+            serving
+        ])))
         .mount(&server)
         .await;
     let favs = client(&server).favorites("u1").await.unwrap();

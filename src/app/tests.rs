@@ -90,7 +90,7 @@ fn servings_now_loads_player() {
     assert!(fx.contains(&Effect::Player(PlayerCommand::Load {
         id: "a".into(),
         url: "https://cdn/a.mp3".into(),
-        length: Duration::from_secs(300),
+        length: Duration::from_mins(5),
     })));
     assert_eq!(s.pending.as_ref().unwrap().track.id, "a");
     assert!(
@@ -418,7 +418,7 @@ fn timer_overlay_sets_mode() {
     update(&mut s, code(KeyCode::Enter));
     assert_eq!(
         *s.timer.mode(),
-        TimerMode::Countdown(Duration::from_secs(30 * 60))
+        TimerMode::Countdown(Duration::from_mins(30))
     );
 }
 

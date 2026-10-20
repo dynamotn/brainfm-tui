@@ -29,7 +29,7 @@ const HELP: &[(&str, &str)] = &[
     ("q", "quit"),
 ];
 
-fn modal(f: &mut Frame, title: &str, width: u16, height: u16, t: &Theme) -> Rect {
+fn modal(f: &mut Frame<'_>, title: &str, width: u16, height: u16, t: &Theme) -> Rect {
     let area = f.area();
     let [v] = Layout::vertical([Constraint::Length(height.min(area.height))])
         .flex(Flex::Center)
@@ -72,8 +72,15 @@ fn hint<'a>(text: &str, t: &Theme) -> Line<'a> {
     Line::from(Span::styled(format!(" {text}"), t.dim()))
 }
 
-fn list(f: &mut Frame, title: &str, mut lines: Vec<Line<'_>>, sel: usize, footer: &str, t: &Theme) {
-    let height = (lines.len() as u16 + 4).min(22);
+fn list(
+    f: &mut Frame<'_>,
+    title: &str,
+    mut lines: Vec<Line<'_>>,
+    sel: usize,
+    footer: &str,
+    t: &Theme,
+) {
+    let height = super::to_u16(lines.len()).saturating_add(4).min(22);
     let inner = modal(f, title, 44, height, t);
     let [body, _, foot] = Layout::vertical([
         Constraint::Fill(1),
@@ -87,7 +94,7 @@ fn list(f: &mut Frame, title: &str, mut lines: Vec<Line<'_>>, sel: usize, footer
     f.render_widget(Paragraph::new(hint(footer, t)), foot);
 }
 
-pub fn draw(f: &mut Frame, o: &Overlay, s: &AppState, t: &Theme) {
+pub(super) fn draw(f: &mut Frame<'_>, o: &Overlay, s: &AppState, t: &Theme) {
     match o {
         Overlay::Activity { sel } => {
             let current = s.current_activity_id();
@@ -146,59 +153,67 @@ pub fn draw(f: &mut Frame, o: &Overlay, s: &AppState, t: &Theme) {
                 .collect();
             list(f, "Timer", lines, *sel, "enter select · esc close", t);
         }
-        Overlay::Help => {
-            let lines: Vec<Line> = HELP
-                .iter()
-                .map(|(k, v)| {
-                    Line::from(vec![
-                        Span::styled(format!("  {k:<11}"), Style::new().fg(t.pink)),
-                        Span::styled(*v, Style::new().fg(t.text)),
-                    ])
-                })
-                .collect();
-            let inner = modal(f, "Keys", 40, lines.len() as u16 + 2, t);
-            f.render_widget(Paragraph::new(lines), inner);
-        }
+        Overlay::Help => draw_help(f, t),
         Overlay::Login {
             email,
             password,
             field,
             error,
-        } => {
-            let inner = modal(f, "Log in to Brain.fm", 56, 11, t);
-            let input = |label: &str, value: String, active: bool| {
-                let style = if active {
-                    Style::new()
-                        .fg(t.text)
-                        .bg(t.surface)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(t.text_dim).bg(t.surface)
-                };
-                let cursor = if active { "▏" } else { " " };
-                vec![
-                    Line::from(Span::styled(format!(" {label}"), t.dim())),
-                    Line::from(Span::styled(format!(" {value}{cursor:<40}"), style)),
-                ]
-            };
-            let mut lines = input("Email", email.clone(), *field == LoginField::Email);
-            lines.extend(input(
-                "Password",
-                "•".repeat(password.chars().count()),
-                *field == LoginField::Password,
-            ));
-            lines.push(Line::default());
-            if let Some(e) = error {
-                lines.push(Line::from(Span::styled(
-                    format!(" {e}"),
-                    Style::new().fg(t.orange),
-                )));
-            } else {
-                lines.push(Line::default());
-            }
-            lines.push(hint("tab switch field · enter log in", t));
-            lines.push(hint("Google/Apple account? run `brainfm login --token`", t));
-            f.render_widget(Paragraph::new(lines), inner);
-        }
+        } => draw_login(f, email, password, *field, error.as_deref(), t),
     }
+}
+
+fn draw_help(f: &mut Frame<'_>, t: &Theme) {
+    let lines: Vec<Line<'_>> = HELP
+        .iter()
+        .map(|(k, v)| {
+            Line::from(vec![
+                Span::styled(format!("  {k:<11}"), Style::new().fg(t.pink)),
+                Span::styled(*v, Style::new().fg(t.text)),
+            ])
+        })
+        .collect();
+    let height = super::to_u16(lines.len()).saturating_add(2);
+    let inner = modal(f, "Keys", 40, height, t);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_login(
+    f: &mut Frame<'_>,
+    email: &str,
+    password: &str,
+    field: LoginField,
+    error: Option<&str>,
+    t: &Theme,
+) {
+    let inner = modal(f, "Log in to Brain.fm", 56, 11, t);
+    let input = |label: &str, value: String, active: bool| {
+        let style = if active {
+            Style::new()
+                .fg(t.text)
+                .bg(t.surface)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.text_dim).bg(t.surface)
+        };
+        let cursor = if active { "▏" } else { " " };
+        vec![
+            Line::from(Span::styled(format!(" {label}"), t.dim())),
+            Line::from(Span::styled(format!(" {value}{cursor:<40}"), style)),
+        ]
+    };
+    let mut lines = input("Email", email.to_owned(), field == LoginField::Email);
+    lines.extend(input(
+        "Password",
+        "•".repeat(password.chars().count()),
+        field == LoginField::Password,
+    ));
+    lines.push(Line::default());
+    lines.push(match error {
+        Some(e) => Line::from(Span::styled(format!(" {e}"), Style::new().fg(t.orange))),
+        None => Line::default(),
+    });
+    lines.push(hint("tab switch field · enter log in", t));
+    lines.push(hint("Google/Apple account? run `brainfm login --token`", t));
+    f.render_widget(Paragraph::new(lines), inner);
 }

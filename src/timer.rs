@@ -126,7 +126,7 @@ impl Timer {
 }
 
 /// `MM:SS`, or `H:MM:SS` from one hour up.
-pub fn format_clock(d: Duration) -> String {
+pub(crate) fn format_clock(d: Duration) -> String {
     let s = d.as_secs();
     let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
     if h > 0 {
@@ -137,7 +137,7 @@ pub fn format_clock(d: Duration) -> String {
 }
 
 /// Parses `"25m/5m"` into an Intervals mode.
-pub fn parse_intervals(s: &str) -> anyhow::Result<TimerMode> {
+pub(crate) fn parse_intervals(s: &str) -> anyhow::Result<TimerMode> {
     let (f, r) = s
         .split_once('/')
         .context("intervals must look like 25m/5m")?;
@@ -154,7 +154,7 @@ mod tests {
     use super::*;
 
     const S: Duration = Duration::from_secs(1);
-    const M: Duration = Duration::from_secs(60);
+    const M: Duration = Duration::from_mins(1);
 
     #[test]
     fn infinite_counts_up() {
@@ -198,9 +198,9 @@ mod tests {
             Some(TimerEvent::PhaseChanged(Phase::Rest))
         );
         assert_eq!(t.phase(), Phase::Rest);
-        assert_eq!(t.display(), 5 * M - 10 * S);
+        assert_eq!(t.display(), (5 * M).checked_sub(10 * S).unwrap());
         assert_eq!(t.tick(5 * M), Some(TimerEvent::PhaseChanged(Phase::Focus)));
-        assert_eq!(t.display(), 25 * M - 10 * S);
+        assert_eq!(t.display(), (25 * M).checked_sub(10 * S).unwrap());
         assert!(t.is_running());
     }
 

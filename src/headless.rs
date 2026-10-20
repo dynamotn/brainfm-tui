@@ -16,15 +16,13 @@ const TICK: Duration = Duration::from_millis(250);
 const MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
 /// Command-line filters win over the saved per-state preferences.
-pub fn build_request(
+pub(crate) fn build_request(
     activity_id: &str,
     effect: Option<EffectLevel>,
     genres: &[String],
     prefs: &StatePrefs,
 ) -> SessionRequest {
-    let effects = effect
-        .map(|e| vec![e])
-        .unwrap_or_else(|| prefs.effects.clone());
+    let effects = effect.map_or_else(|| prefs.effects.clone(), |e| vec![e]);
     let genres = if genres.is_empty() {
         prefs.genres.clone()
     } else {
@@ -38,7 +36,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Runs `f` up to `attempts` times with a doubling delay. An expired session
 /// is returned at once since retrying cannot fix it.
-pub async fn retry<T, F, Fut>(attempts: u32, delay: Duration, mut f: F) -> anyhow::Result<T>
+pub(crate) async fn retry<T, F, Fut>(attempts: u32, delay: Duration, mut f: F) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,
@@ -63,7 +61,7 @@ where
 }
 
 /// A failed *queued* track only drops the prefetch; the current track plays on.
-pub fn error_needs_reload(id: &str, next: &mut Option<Serving>) -> bool {
+pub(crate) fn error_needs_reload(id: &str, next: &mut Option<Serving>) -> bool {
     if next.as_ref().is_some_and(|n| n.track.id == id) {
         *next = None;
         return false;
@@ -97,11 +95,7 @@ fn command_for(s: &Serving, queue: bool) -> anyhow::Result<PlayerCommand> {
 
 fn status_line(s: &Serving, pos: Duration, timer: &Timer, paused: bool) -> String {
     let t = &s.track;
-    let effect = s
-        .track_variation
-        .effect()
-        .map(EffectLevel::label)
-        .unwrap_or("—");
+    let effect = s.track_variation.effect().map_or("—", EffectLevel::label);
     let icon = if paused { "⏸" } else { "▶" };
     let phase = match (timer.mode(), timer.phase()) {
         (TimerMode::Intervals { .. }, Phase::Rest) => " (break)",
@@ -117,10 +111,12 @@ fn status_line(s: &Serving, pos: Duration, timer: &Timer, paused: bool) -> Strin
     )
 }
 
-pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
-    let (client, session) = client_from_store(store)?;
-    let config = Config::load(&Config::default_path()?)?;
-
+/// Resolves the mental state, activity and filters into a session request.
+async fn resolve_request(
+    client: &ApiClient,
+    config: &Config,
+    args: &PlayArgs,
+) -> anyhow::Result<SessionRequest> {
     let states = client.mental_states().await?;
     let state = resolve_state(&states, &args.state)
         .with_context(|| format!("unknown mental state {:?}", args.state))?;
@@ -138,19 +134,30 @@ pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
             .or_else(|| activities.first().map(|a| a.id.clone()))
             .context("this mental state has no activities")?,
     };
-    let req = build_request(
+    Ok(build_request(
         &activity_id,
         args.effect.map(Into::into),
         &args.genre,
         &prefs,
-    );
+    ))
+}
 
-    let mode = match (&args.timer, &args.intervals) {
+fn timer_mode(args: &PlayArgs) -> anyhow::Result<TimerMode> {
+    Ok(match (&args.timer, &args.intervals) {
         (Some(d), _) => TimerMode::Countdown((*d).into()),
         (None, Some(s)) => parse_intervals(s)?,
         (None, None) => TimerMode::Infinite,
-    };
-    let mut timer = Timer::new(mode);
+    })
+}
+
+// One `select!` loop over player events, prefetches and ticks; its arms share
+// a dozen locals across awaits, which reads worse when split up.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
+    let (client, session) = client_from_store(store)?;
+    let config = Config::load(&Config::default_path()?)?;
+    let req = resolve_request(&client, &config, &args).await?;
+    let mut timer = Timer::new(timer_mode(&args)?);
 
     let (player, mut events) = player::spawn(tokio::runtime::Handle::current())?;
     player.send(PlayerCommand::SetVolume(f32::from(config.volume) / 100.0));
@@ -288,7 +295,7 @@ async fn or_ctrl_c<T>(fut: impl Future<Output = anyhow::Result<T>>) -> anyhow::R
 }
 
 /// Drops control characters so API text cannot drive the terminal.
-pub fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 

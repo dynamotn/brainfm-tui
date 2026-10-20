@@ -31,6 +31,7 @@ const TICK: Duration = Duration::from_millis(250);
 /// Slightly longer than the quit fade so it can finish before exit.
 const QUIT_GRACE: Duration = Duration::from_millis(600);
 
+#[must_use]
 pub fn error_kind(e: &ApiError) -> ApiErrorKind {
     match e {
         ApiError::Unauthorized => ApiErrorKind::Unauthorized,
@@ -237,7 +238,7 @@ pub async fn run() -> anyhow::Result<()> {
     let mut client = ApiClient::new(Url::parse(DEFAULT_BASE)?)
         .on_token_refresh(move |t| writer.refresh_in_background(t));
     if let Some(s) = &session {
-        client = client.with_token(s.token.clone());
+        client = client.with_token(&s.token);
     }
 
     let mut state = AppState::new(config, config_writable, session.map(|s| s.user_id));

@@ -1,0 +1,3 @@
+# Tests assert with unwrap; production code must use expect or `?`.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

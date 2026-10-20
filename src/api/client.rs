@@ -35,6 +35,7 @@ pub enum ApiError {
 pub type ApiResult<T> = Result<T, ApiError>;
 
 /// True when `e`, or anything it wraps, is an expired or missing session.
+#[must_use]
 pub fn is_unauthorized(e: &anyhow::Error) -> bool {
     e.chain()
         .any(|c| matches!(c.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)))
@@ -131,7 +132,19 @@ fn safe_id(id: &str) -> ApiResult<&str> {
     }
 }
 
+impl std::fmt::Debug for ApiClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiClient")
+            .field("base", &self.base.as_str())
+            .field("token", &self.token().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
+}
+
 impl ApiClient {
+    /// # Panics
+    /// Never in practice: the client is built from static settings only.
+    #[must_use]
     pub fn new(base: Url) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, HeaderValue::from_static(ORIGIN));
@@ -155,17 +168,23 @@ impl ApiClient {
         }
     }
 
-    pub fn with_token(self, token: String) -> Self {
-        self.set_token(&token);
+    #[must_use]
+    pub fn with_token(self, token: &str) -> Self {
+        self.set_token(token);
         self
     }
 
     /// Called with every new token the API slides forward, so it can be persisted.
+    #[must_use]
     pub fn on_token_refresh(mut self, f: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.on_token = Some(Arc::new(f));
         self
     }
 
+    /// # Panics
+    /// Only if a previous holder of the token lock panicked, which no code
+    /// path does while holding it.
+    #[must_use]
     pub fn token(&self) -> Option<String> {
         self.token.lock().expect("token lock").clone()
     }
@@ -204,10 +223,10 @@ impl ApiClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => return Err(ApiError::Unauthorized),
             StatusCode::TOO_MANY_REQUESTS => return Err(ApiError::RateLimited),
             s if !s.is_success() => {
-                let message = env
-                    .and_then(|e| e.messages)
-                    .map(|m| m.join("; "))
-                    .unwrap_or_else(|| s.canonical_reason().unwrap_or("error").to_owned());
+                let message = env.and_then(|e| e.messages).map_or_else(
+                    || s.canonical_reason().unwrap_or("error").to_owned(),
+                    |m| m.join("; "),
+                );
                 return Err(ApiError::Status {
                     code: s.as_u16(),
                     message,

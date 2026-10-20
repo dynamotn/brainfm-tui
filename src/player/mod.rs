@@ -71,6 +71,7 @@ impl PlayerHandle {
 
 /// Replaces the query string of every URL with `?…`: signed audio URLs carry
 /// short-lived credentials there and must not reach logs or the screen.
+#[must_use]
 pub fn redact_urls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -98,6 +99,7 @@ pub fn redact_urls(text: &str) -> String {
 }
 
 /// True once per track when it is within [`PREFETCH_LEAD`] of its end.
+#[must_use]
 pub fn near_end(length: Duration, pos: Duration, already: bool) -> bool {
     !already && !length.is_zero() && length.saturating_sub(pos) <= PREFETCH_LEAD
 }

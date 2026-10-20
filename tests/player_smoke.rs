@@ -84,7 +84,7 @@ async fn streams_and_continues_gaplessly() {
 async fn stalled_stream_does_not_block_next_load() {
     let server = MockServer::start().await;
     Mock::given(path("/stall.mp3"))
-        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(120)))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_mins(2)))
         .mount(&server)
         .await;
     Mock::given(path("/ok.mp3"))
@@ -130,7 +130,7 @@ async fn stalled_stream_does_not_block_next_load() {
 
 fn audio_threads() -> usize {
     std::fs::read_dir("/proc/self/task")
-        .unwrap()
+        .expect("linux /proc")
         .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
         .filter(|c| c.trim() == "brainfm-audio")
         .count()

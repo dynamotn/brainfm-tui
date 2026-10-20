@@ -27,7 +27,7 @@ impl fmt::Debug for Session {
 }
 
 /// Reads the `_id` claim from a JWT payload without verifying it.
-pub fn user_id_from_jwt(token: &str) -> anyhow::Result<String> {
+pub(crate) fn user_id_from_jwt(token: &str) -> anyhow::Result<String> {
     let payload = token.split('.').nth(1).context("token is not a JWT")?;
     let bytes = URL_SAFE_NO_PAD
         .decode(payload.trim_end_matches('='))
@@ -41,7 +41,7 @@ pub fn user_id_from_jwt(token: &str) -> anyhow::Result<String> {
 }
 
 /// Creates `dir` (and parents) and makes sure it is mode 0700 even if it existed.
-pub fn ensure_private_dir(dir: &Path) -> anyhow::Result<()> {
+pub(crate) fn ensure_private_dir(dir: &Path) -> anyhow::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

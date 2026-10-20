@@ -3,7 +3,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Debug, Clone, Copy)]
-pub struct Glyphs {
+pub(crate) struct Glyphs {
     pub play: &'static str,
     pub pause: &'static str,
     pub skip: &'static str,
@@ -58,7 +58,7 @@ const ASCII: Glyphs = Glyphs {
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct Theme {
+pub(crate) struct Theme {
     pub bg: Color,
     pub surface: Color,
     pub surface_hi: Color,
@@ -109,18 +109,18 @@ impl Theme {
         }
     }
 
-    /// Plain glyphs with the indexed palette; used by tests and `BRAINFM_ASCII=1`.
-    pub fn ascii() -> Self {
+    /// Plain glyphs with the indexed palette, for stable test snapshots.
+    #[cfg(test)]
+    pub(crate) fn ascii() -> Self {
         Self {
             glyphs: ASCII,
             ..Self::indexed()
         }
     }
 
-    pub fn detect() -> Self {
-        let truecolor = std::env::var("COLORTERM")
-            .map(|v| matches!(v.as_str(), "truecolor" | "24bit"))
-            .unwrap_or(false);
+    pub(crate) fn detect() -> Self {
+        let truecolor =
+            std::env::var("COLORTERM").is_ok_and(|v| matches!(v.as_str(), "truecolor" | "24bit"));
         let mut t = if truecolor {
             Self::rgb()
         } else {
@@ -133,11 +133,13 @@ impl Theme {
     }
 
     /// Pink at 0.0 through purple at 1.0.
-    pub fn gradient(&self, t: f64) -> Color {
+    pub(crate) fn gradient(&self, t: f64) -> Color {
         if !self.truecolor {
             return if t < 0.5 { self.pink } else { self.purple };
         }
         let t = t.clamp(0.0, 1.0);
+        // `t` is clamped to 0..=1, so every mix stays between two u8 values.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let mix = |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8;
         Color::Rgb(
             mix(PINK.0, PURPLE.0),
@@ -146,15 +148,15 @@ impl Theme {
         )
     }
 
-    pub fn base(&self) -> Style {
+    pub(crate) fn base(&self) -> Style {
         Style::new().fg(self.text).bg(self.bg)
     }
 
-    pub fn dim(&self) -> Style {
+    pub(crate) fn dim(&self) -> Style {
         Style::new().fg(self.text_dim)
     }
 
-    pub fn accent(&self) -> Style {
+    pub(crate) fn accent(&self) -> Style {
         Style::new().fg(self.pink).add_modifier(Modifier::BOLD)
     }
 }

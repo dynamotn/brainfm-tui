@@ -7,7 +7,7 @@ use crate::api::Serving;
 use crate::app::state::Playback;
 use crate::app::update::{Action, MediaKey};
 
-pub fn map_media(e: MediaControlEvent) -> Option<MediaKey> {
+pub(crate) fn map_media(e: &MediaControlEvent) -> Option<MediaKey> {
     match e {
         MediaControlEvent::Play => Some(MediaKey::Play),
         MediaControlEvent::Pause | MediaControlEvent::Stop => Some(MediaKey::Pause),
@@ -17,13 +17,13 @@ pub fn map_media(e: MediaControlEvent) -> Option<MediaKey> {
     }
 }
 
-pub struct MediaBridge {
+pub(crate) struct MediaBridge {
     controls: MediaControls,
 }
 
 impl MediaBridge {
     /// Registers on the session bus; `None` (logged) when that is unavailable.
-    pub fn new(tx: UnboundedSender<Action>) -> Option<Self> {
+    pub(crate) fn new(tx: UnboundedSender<Action>) -> Option<Self> {
         let config = PlatformConfig {
             display_name: "Brain.fm",
             dbus_name: "brainfm",
@@ -37,7 +37,7 @@ impl MediaBridge {
             }
         };
         let attached = controls.attach(move |e| {
-            if let Some(k) = map_media(e) {
+            if let Some(k) = map_media(&e) {
                 let _ = tx.send(Action::Media(k));
             }
         });
@@ -48,7 +48,7 @@ impl MediaBridge {
         Some(Self { controls })
     }
 
-    pub fn set_track(&mut self, s: &Serving) {
+    pub(crate) fn set_track(&mut self, s: &Serving) {
         let genre = s.track.genre();
         let meta = MediaMetadata {
             title: Some(&s.track.name),
@@ -62,7 +62,7 @@ impl MediaBridge {
         }
     }
 
-    pub fn set_playback(&mut self, p: Playback) {
+    pub(crate) fn set_playback(&mut self, p: Playback) {
         let playback = match p {
             Playback::Playing => MediaPlayback::Playing { progress: None },
             Playback::Paused | Playback::Loading => MediaPlayback::Paused { progress: None },
@@ -80,11 +80,14 @@ mod tests {
 
     #[test]
     fn media_events_map_to_actions() {
-        assert_eq!(map_media(MediaControlEvent::Play), Some(MediaKey::Play));
-        assert_eq!(map_media(MediaControlEvent::Pause), Some(MediaKey::Pause));
-        assert_eq!(map_media(MediaControlEvent::Toggle), Some(MediaKey::Toggle));
-        assert_eq!(map_media(MediaControlEvent::Next), Some(MediaKey::Next));
-        assert_eq!(map_media(MediaControlEvent::Stop), Some(MediaKey::Pause));
-        assert_eq!(map_media(MediaControlEvent::Raise), None);
+        assert_eq!(map_media(&MediaControlEvent::Play), Some(MediaKey::Play));
+        assert_eq!(map_media(&MediaControlEvent::Pause), Some(MediaKey::Pause));
+        assert_eq!(
+            map_media(&MediaControlEvent::Toggle),
+            Some(MediaKey::Toggle)
+        );
+        assert_eq!(map_media(&MediaControlEvent::Next), Some(MediaKey::Next));
+        assert_eq!(map_media(&MediaControlEvent::Stop), Some(MediaKey::Pause));
+        assert_eq!(map_media(&MediaControlEvent::Raise), None);
     }
 }

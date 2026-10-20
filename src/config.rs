@@ -15,7 +15,7 @@ fn dirs() -> anyhow::Result<ProjectDirs> {
 }
 
 /// `~/.local/state/brainfm` on Linux; falls back to the data dir elsewhere.
-pub fn state_dir() -> anyhow::Result<PathBuf> {
+pub(crate) fn state_dir() -> anyhow::Result<PathBuf> {
     let d = dirs()?;
     Ok(d.state_dir()
         .unwrap_or_else(|| d.data_local_dir())
@@ -52,6 +52,8 @@ pub struct StatePrefs {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+// The field names are the config file's keys; the unit suffix is deliberate.
+#[allow(clippy::struct_field_names)]
 pub struct TimerPrefs {
     /// Up to three saved custom countdown lengths, in minutes.
     pub custom_minutes: Vec<u32>,

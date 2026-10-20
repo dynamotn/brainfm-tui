@@ -74,7 +74,7 @@ pub(super) fn start(
         .spawn(move || match Engine::open(rt, tx, ev_tx, https_only) {
             Ok(mut engine) => {
                 let _ = ready_tx.send(Ok(()));
-                engine.run(rx);
+                engine.run(&rx);
             }
             Err(e) => {
                 let _ = ready_tx.send(Err(e));
@@ -150,11 +150,10 @@ impl Engine {
         let _ = self.events.send(e);
     }
 
-    fn run(&mut self, rx: mpsc::Receiver<Msg>) {
+    fn run(&mut self, rx: &mpsc::Receiver<Msg>) {
         loop {
             match rx.recv_timeout(POLL) {
                 Ok(Msg::Command(cmd)) => self.handle(cmd),
-                Ok(Msg::Shutdown) => return,
                 Ok(Msg::Opened {
                     generation,
                     replace,
@@ -167,7 +166,7 @@ impl Engine {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
+                Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
             }
             self.poll();
         }
@@ -274,14 +273,14 @@ impl Engine {
     }
 
     fn fade_out(&self, fade: Duration) {
+        const STEPS: u16 = 20;
         if self.player.is_paused() || self.queue.is_empty() || fade.is_zero() {
             return;
         }
-        let steps = 20u32;
-        for i in (0..steps).rev() {
+        for i in (0..STEPS).rev() {
             self.player
-                .set_volume(self.volume * i as f32 / steps as f32);
-            std::thread::sleep(fade / steps);
+                .set_volume(self.volume * f32::from(i) / f32::from(STEPS));
+            std::thread::sleep(fade / u32::from(STEPS));
         }
     }
 

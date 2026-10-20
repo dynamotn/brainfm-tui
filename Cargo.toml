@@ -2,6 +2,13 @@
 name = "brainfm"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91"
+description = "Unofficial terminal client for Brain.fm: a desktop-like TUI and a scriptable CLI"
+repository = "https://github.com/dynamotn/brainfm-tui"
+readme = "README.md"
+keywords = ["brainfm", "tui", "music", "focus", "cli"]
+categories = ["command-line-utilities", "multimedia::audio"]
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"
@@ -18,10 +25,10 @@ rpassword = "7.5.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 souvlaki = "0.8"
-stream-download = "0.24"
+stream-download = { version = "0.24", default-features = false, features = ["reqwest"] }
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "1.1.8"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
@@ -35,3 +42,26 @@ wiremock = "0.6"
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Enforced: an unwrap outside tests needs to become an `expect` with a reason.
+unwrap_used = "warn"
+dbg_macro = "warn"
+# Allowed on purpose:
+# - every fallible fn here returns anyhow::Result with context; an `# Errors`
+#   section would only restate it.
+missing_errors_doc = "allow"
+# - `ui::player`, `player::PlayerCommand`… read better than shortened names.
+module_name_repetitions = "allow"
+# - usize→f64 only happens on terminal-sized counts (< 2^16), never lossy.
+cast_precision_loss = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
