@@ -217,7 +217,9 @@ impl ApiClient {
         }
 
         let env = env.ok_or_else(|| ApiError::Decode("response is not JSON".into()))?;
-        if let Some(t) = env.token.as_deref().filter(|t| !t.is_empty()) {
+        if let Some(t) = env.token.as_deref().filter(|t| !t.is_empty())
+            && self.token().as_deref() != Some(t)
+        {
             self.set_token(t);
             if let Some(cb) = &self.on_token {
                 cb(t);

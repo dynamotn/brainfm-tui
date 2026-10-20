@@ -234,11 +234,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (tx, mut rx) = unbounded_channel::<Action>();
     let writer = store.clone();
-    let mut client = ApiClient::new(Url::parse(DEFAULT_BASE)?).on_token_refresh(move |t| {
-        if let Err(e) = writer.save(t) {
-            tracing::warn!("could not persist refreshed token: {e:#}");
-        }
-    });
+    let mut client = ApiClient::new(Url::parse(DEFAULT_BASE)?)
+        .on_token_refresh(move |t| writer.refresh_in_background(t));
     if let Some(s) = &session {
         client = client.with_token(s.token.clone());
     }

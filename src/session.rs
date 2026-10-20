@@ -112,6 +112,29 @@ impl SessionStore {
         })
     }
 
+    /// Persists a slid-forward token, but only while a session file exists, so
+    /// a still-running TUI cannot undo `brainfm logout`.
+    pub fn refresh(&self, token: &str) -> anyhow::Result<()> {
+        if self.path.exists() {
+            self.save(token)?;
+        }
+        Ok(())
+    }
+
+    /// Persists a refreshed token off the async runtime (it fsyncs).
+    pub fn refresh_in_background(&self, token: &str) {
+        let (store, token) = (self.clone(), token.to_owned());
+        let write = move || {
+            if let Err(e) = store.refresh(&token) {
+                tracing::warn!("could not persist refreshed token: {e:#}");
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(write)),
+            Err(_) => write(),
+        }
+    }
+
     pub fn clear(&self) -> anyhow::Result<()> {
         match fs::remove_file(&self.path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -189,6 +212,26 @@ mod tests {
         ensure_private_dir(&state).unwrap();
         let mode = std::fs::metadata(&state).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn refresh_does_not_resurrect_a_logged_out_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().join("session.json"));
+        store.save(&jwt("u1")).unwrap();
+        store.clear().unwrap();
+        store.refresh(&jwt("u1")).unwrap();
+        assert!(store.load().unwrap().is_none());
+    }
+
+    #[test]
+    fn refresh_updates_an_existing_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().join("session.json"));
+        store.save(&jwt("u1")).unwrap();
+        let newer = jwt("u1") + "x";
+        store.refresh(&newer).unwrap();
+        assert_eq!(store.load().unwrap().unwrap().token, newer);
     }
 
     #[test]

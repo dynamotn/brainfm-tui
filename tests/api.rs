@@ -268,3 +268,20 @@ async fn network_errors_show_their_cause() {
         "cause chain missing: {text}"
     );
 }
+
+#[tokio::test]
+async fn unchanged_token_does_not_notify() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"status": 200, "result": [], "token": "t0"})),
+        )
+        .mount(&server)
+        .await;
+    let calls = Arc::new(Mutex::new(0u32));
+    let sink = calls.clone();
+    let c = client(&server).on_token_refresh(move |_| *sink.lock().unwrap() += 1);
+    c.mental_states().await.unwrap();
+    assert_eq!(*calls.lock().unwrap(), 0);
+}

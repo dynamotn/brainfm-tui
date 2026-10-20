@@ -120,11 +120,7 @@ pub fn client_from_store(store: &SessionStore) -> anyhow::Result<(ApiClient, Ses
     let writer = store.clone();
     let client = ApiClient::new(base_url())
         .with_token(session.token.clone())
-        .on_token_refresh(move |t| {
-            if let Err(e) = writer.save(t) {
-                tracing::warn!("could not persist refreshed token: {e:#}");
-            }
-        });
+        .on_token_refresh(move |t| writer.refresh_in_background(t));
     Ok((client, session))
 }
 
