@@ -112,6 +112,8 @@ pub struct AppState {
     /// False when the config file was malformed; it is then never overwritten.
     pub config_writable: bool,
     pub now: Option<Serving>,
+    /// Sent to the engine with `Load`; becomes `now` once it reports `Started`.
+    pub pending: Option<Serving>,
     pub next: Option<Serving>,
     pub playback: Playback,
     pub position: Duration,
@@ -140,6 +142,7 @@ impl AppState {
             config,
             config_writable,
             now: None,
+            pending: None,
             next: None,
             playback: Playback::Idle,
             position: Duration::ZERO,

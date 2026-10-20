@@ -116,7 +116,13 @@ impl Runtime {
                         generation,
                         items,
                     }),
-                    Err(e) => failed("session", &e),
+                    Err(e) => {
+                        tracing::warn!("session failed: {e}");
+                        Action::Api(ApiReply::SessionFailed {
+                            generation,
+                            error: error_kind(&e),
+                        })
+                    }
                 }
             }),
             Effect::Player(cmd) => self.player.send(cmd),

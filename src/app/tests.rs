@@ -92,7 +92,11 @@ fn servings_now_loads_player() {
         url: "https://cdn/a.mp3".into(),
         length: Duration::from_secs(300),
     })));
-    assert_eq!(s.now.as_ref().unwrap().track.id, "a");
+    assert_eq!(s.pending.as_ref().unwrap().track.id, "a");
+    assert!(
+        s.now.is_none(),
+        "becomes now only when the engine starts it"
+    );
 }
 
 #[test]
@@ -655,4 +659,173 @@ fn loading_watchdog_gives_up() {
         }),
     );
     assert!(fx.is_empty());
+}
+
+// --- review round 2: loading/generation ---
+
+fn session_effect(fx: &[Effect], intent: Intent) -> u64 {
+    fx.iter()
+        .find_map(|e| match e {
+            Effect::StartSession {
+                intent: i,
+                generation,
+                ..
+            } if *i == intent => Some(*generation),
+            _ => None,
+        })
+        .expect("StartSession")
+}
+
+#[test]
+fn near_end_during_skip_does_not_drop_the_skip() {
+    let mut s = playing();
+    let now_gen = session_effect(&update(&mut s, key('n')), Intent::Now);
+    let fx = update(
+        &mut s,
+        Action::Player(PlayerEvent::NearEnd { id: "a".into() }),
+    );
+    assert!(
+        !has_session(&fx, Intent::Next),
+        "no prefetch while a skip is loading"
+    );
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Servings {
+            intent: Intent::Now,
+            generation: now_gen,
+            items: vec![serving("c")],
+        }),
+    );
+    assert!(matches!(fx.as_slice(), [Effect::Player(PlayerCommand::Load { id, .. })] if id == "c"));
+}
+
+#[test]
+fn failed_load_after_natural_end_goes_idle() {
+    let mut s = playing();
+    update(
+        &mut s,
+        Action::Player(PlayerEvent::Ended { id: "a".into() }),
+    );
+    assert_eq!(s.playback, Playback::Loading);
+    let generation = s.session_gen;
+    update(
+        &mut s,
+        Action::Api(ApiReply::SessionFailed {
+            generation,
+            error: ApiErrorKind::Other("500".into()),
+        }),
+    );
+    assert_eq!(s.playback, Playback::Idle);
+    assert!(
+        has_session(&update(&mut s, key(' ')), Intent::Now),
+        "space retries"
+    );
+}
+
+#[test]
+fn library_pick_cancels_inflight_skip() {
+    let mut s = ready();
+    update(
+        &mut s,
+        Action::Api(ApiReply::Library {
+            favorites: vec![serving("f1")],
+            recents: vec![],
+        }),
+    );
+    let mut s2 = s.clone();
+    s2.panel.visible = true;
+    let skip_gen = session_effect(&update(&mut s2, key('n')), Intent::Now);
+    s2.loading_for = Duration::from_secs(29);
+    update(&mut s2, code(KeyCode::Enter));
+    assert_eq!(s2.loading_for, Duration::ZERO);
+    let fx = update(
+        &mut s2,
+        Action::Api(ApiReply::Servings {
+            intent: Intent::Now,
+            generation: skip_gen,
+            items: vec![serving("random")],
+        }),
+    );
+    assert!(
+        fx.is_empty(),
+        "stale skip must not replace the picked favorite"
+    );
+    update(
+        &mut s2,
+        Action::Player(PlayerEvent::Started { id: "f1".into() }),
+    );
+    assert_eq!(s2.now.as_ref().unwrap().track.id, "f1");
+}
+
+#[test]
+fn loading_track_is_pending_until_started() {
+    let mut s = playing();
+    update(&mut s, key('n'));
+    {
+        let a = reply(&s, Intent::Now, vec![serving("c")]);
+        update(&mut s, a)
+    };
+    assert_eq!(
+        s.now.as_ref().unwrap().track.id,
+        "a",
+        "old track still shown while c loads"
+    );
+    update(
+        &mut s,
+        Action::Player(PlayerEvent::Started { id: "c".into() }),
+    );
+    assert_eq!(s.now.as_ref().unwrap().track.id, "c");
+}
+
+#[test]
+fn timeout_cancels_engine_load_and_ignores_late_events() {
+    let mut s = ready();
+    update(&mut s, key(' '));
+    {
+        let a = reply(&s, Intent::Now, vec![serving("c")]);
+        update(&mut s, a)
+    };
+    let fx = update(&mut s, Action::Tick(Duration::from_secs(31)));
+    assert!(fx.contains(&Effect::Player(PlayerCommand::CancelPending)));
+    assert_eq!(s.playback, Playback::Idle);
+    let errors = s.errors_in_a_row;
+    let fx = update(
+        &mut s,
+        Action::Player(PlayerEvent::Error {
+            id: "c".into(),
+            message: "late".into(),
+        }),
+    );
+    assert!(fx.is_empty());
+    assert_eq!(s.errors_in_a_row, errors);
+    update(
+        &mut s,
+        Action::Player(PlayerEvent::Started { id: "c".into() }),
+    );
+    assert_eq!(s.playback, Playback::Idle);
+}
+
+#[test]
+fn stale_session_failure_ignored() {
+    let mut s = playing();
+    let next_gen = session_effect(
+        &update(
+            &mut s,
+            Action::Player(PlayerEvent::NearEnd { id: "a".into() }),
+        ),
+        Intent::Next,
+    );
+    update(&mut s, key('n'));
+    update(
+        &mut s,
+        Action::Api(ApiReply::SessionFailed {
+            generation: next_gen,
+            error: ApiErrorKind::Other("boom".into()),
+        }),
+    );
+    assert_eq!(
+        s.playback,
+        Playback::Loading,
+        "the newer skip is still pending"
+    );
 }

@@ -60,6 +60,11 @@ pub enum ApiReply {
     LoggedIn {
         user_id: String,
     },
+    /// A `StartSession` failed; carries its generation so stale ones are ignored.
+    SessionFailed {
+        generation: u64,
+        error: ApiErrorKind,
+    },
     Failed {
         what: &'static str,
         error: ApiErrorKind,
@@ -135,11 +140,7 @@ fn start_session(s: &mut AppState, intent: Intent, fx: &mut Vec<Effect>) {
         Some(req) => {
             s.session_gen += 1;
             if intent == Intent::Now {
-                if s.playback != Playback::Loading {
-                    s.resume_to = s.playback;
-                }
-                s.playback = Playback::Loading;
-                s.loading_for = Duration::ZERO;
+                begin_loading(s);
             }
             fx.push(Effect::StartSession {
                 req,
@@ -151,8 +152,29 @@ fn start_session(s: &mut AppState, intent: Intent, fx: &mut Vec<Effect>) {
     }
 }
 
+/// Enters `Loading`, remembering what the engine is doing meanwhile.
+fn begin_loading(s: &mut AppState) {
+    if s.playback != Playback::Loading {
+        s.resume_to = s.playback;
+    }
+    s.playback = Playback::Loading;
+    s.loading_for = Duration::ZERO;
+}
+
+/// Starts a replacement track when the engine has gone silent (track ended
+/// or failed); if that fails there is nothing to resume.
+fn start_after_silence(s: &mut AppState, fx: &mut Vec<Effect>) {
+    start_session(s, Intent::Now, fx);
+    if s.playback == Playback::Loading {
+        s.resume_to = Playback::Idle;
+    }
+}
+
 /// A `Loading` request failed: go back to whatever the engine is still doing.
-fn abort_loading(s: &mut AppState) {
+fn abort_loading(s: &mut AppState, fx: &mut Vec<Effect>) {
+    if s.pending.take().is_some() {
+        fx.push(Effect::Player(PlayerCommand::CancelPending));
+    }
     if s.playback == Playback::Loading {
         s.playback = s.resume_to;
     }
@@ -168,13 +190,11 @@ fn load(s: &mut AppState, serving: Serving, fx: &mut Vec<Effect>) {
                 length: v.length(),
             }));
             s.playback = Playback::Loading;
-            s.position = Duration::ZERO;
-            s.next = None;
-            s.now = Some(serving);
+            s.pending = Some(serving);
         }
         None => {
             s.errors_in_a_row += 1;
-            abort_loading(s);
+            abort_loading(s, fx);
             toast(s, "That track has no audio URL");
         }
     }
@@ -326,6 +346,9 @@ fn panel_enter(s: &mut AppState, fx: &mut Vec<Effect>) {
         PanelTab::Library => {
             let picked = s.library().nth(s.panel.selected).cloned();
             if let Some(serving) = picked {
+                // Supersede any session request still in flight.
+                s.session_gen += 1;
+                begin_loading(s);
                 load(s, serving, fx);
             }
         }
@@ -472,7 +495,7 @@ fn on_tick(s: &mut AppState, dt: Duration, fx: &mut Vec<Effect>) {
         if s.loading_for >= LOADING_TIMEOUT {
             s.session_gen += 1;
             s.errors_in_a_row += 1;
-            abort_loading(s);
+            abort_loading(s, fx);
             toast(s, "Timed out loading a track — press space to retry");
         }
     }
@@ -482,6 +505,7 @@ fn on_tick(s: &mut AppState, dt: Duration, fx: &mut Vec<Effect>) {
             s.playback = Playback::Idle;
             s.session_gen += 1;
             s.next = None;
+            s.pending = None;
             toast(s, "Session complete");
         }
         Some(TimerEvent::PhaseChanged(phase)) => {
@@ -503,7 +527,10 @@ fn on_tick(s: &mut AppState, dt: Duration, fx: &mut Vec<Effect>) {
 fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
     match e {
         PlayerEvent::Started { id } => {
-            if s.next.as_ref().is_some_and(|n| n.track.id == id) {
+            if s.pending.as_ref().is_some_and(|p| p.track.id == id) {
+                s.now = s.pending.take();
+                s.next = None;
+            } else if s.next.as_ref().is_some_and(|n| n.track.id == id) {
                 s.now = s.next.take();
             } else if !s.now.as_ref().is_some_and(|n| n.track.id == id) {
                 return;
@@ -519,13 +546,14 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
             }
         }
         PlayerEvent::NearEnd { .. } => {
-            if s.next.is_none() {
+            // While a replacement is loading, prefetching would supersede it.
+            if s.next.is_none() && s.playback == Playback::Playing {
                 start_session(s, Intent::Next, fx);
             }
         }
         PlayerEvent::Ended { .. } => {
             if s.next.is_none() && s.playback == Playback::Playing {
-                start_session(s, Intent::Now, fx);
+                start_after_silence(s, fx);
             }
         }
         PlayerEvent::Error { id, message } => {
@@ -534,16 +562,28 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
                 s.next = None;
                 return;
             }
-            if !s.now.as_ref().is_some_and(|n| n.track.id == id) {
+            let was_pending = s.pending.as_ref().is_some_and(|p| p.track.id == id);
+            if !was_pending && !s.now.as_ref().is_some_and(|n| n.track.id == id) {
                 return;
+            }
+            if was_pending {
+                // The engine never switched; whatever played before still does.
+                s.pending = None;
             }
             s.errors_in_a_row += 1;
             if s.errors_in_a_row >= MAX_ERRORS_IN_A_ROW {
-                s.playback = Playback::Idle;
+                abort_loading(s, fx);
+                if !was_pending {
+                    s.playback = Playback::Idle;
+                }
                 toast(s, format!("Playback keeps failing: {message}"));
             } else {
                 toast(s, format!("Skipping track: {message}"));
-                start_session(s, Intent::Now, fx);
+                if was_pending {
+                    start_session(s, Intent::Now, fx);
+                } else {
+                    start_after_silence(s, fx);
+                }
             }
         }
     }
@@ -593,7 +633,7 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
             (intent, None) => {
                 toast(s, "No tracks match these filters");
                 if intent == Intent::Now {
-                    abort_loading(s);
+                    abort_loading(s, fx);
                 }
             }
         },
@@ -608,9 +648,18 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
             fx.push(Effect::FetchStates);
             fx.push(Effect::FetchLibrary);
         }
+        ApiReply::SessionFailed { generation, .. } if generation != s.session_gen => {}
+        ApiReply::SessionFailed { error, .. } => on_api(
+            s,
+            ApiReply::Failed {
+                what: "session",
+                error,
+            },
+            fx,
+        ),
         ApiReply::Failed { what, error } => match error {
             ApiErrorKind::Unauthorized => {
-                abort_loading(s);
+                abort_loading(s, fx);
                 if s.playback == Playback::Playing {
                     fx.push(Effect::Player(PlayerCommand::Pause));
                     s.timer.pause();
@@ -639,7 +688,7 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
                     return;
                 }
                 if what == "session" {
-                    abort_loading(s);
+                    abort_loading(s, fx);
                 }
                 toast(s, format!("Could not load {what}: {msg}"));
             }

@@ -29,6 +29,8 @@ pub enum PlayerCommand {
     Stop {
         fade: Duration,
     },
+    /// Drop any Load or Queue still being opened; leave playback alone.
+    CancelPending,
     /// 0.0–1.0
     SetVolume(f32),
     /// A short two-tone chime mixed over the music.

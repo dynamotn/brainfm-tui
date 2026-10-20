@@ -244,6 +244,7 @@ impl Engine {
                 self.open_async(true, id, url, length);
             }
             PlayerCommand::Queue { id, url, length } => self.open_async(false, id, url, length),
+            PlayerCommand::CancelPending => self.generation += 1,
             PlayerCommand::Play => self.player.play(),
             PlayerCommand::Pause => self.player.pause(),
             PlayerCommand::Stop { fade } => {
