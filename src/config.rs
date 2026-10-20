@@ -77,7 +77,10 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Config> {
         match fs::read_to_string(path) {
             Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+                let mut c: Config = toml::from_str(&text)
+                    .with_context(|| format!("invalid config {}", path.display()))?;
+                c.volume = c.volume.min(100);
+                Ok(c)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
@@ -116,6 +119,14 @@ mod tests {
         std::fs::write(&path, "volume = [").unwrap();
         let err = format!("{:#}", Config::load(&path).unwrap_err());
         assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn volume_above_100_is_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "volume = 150").unwrap();
+        assert_eq!(Config::load(&path).unwrap().volume, 100);
     }
 
     #[test]

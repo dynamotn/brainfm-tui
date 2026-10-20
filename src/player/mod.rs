@@ -46,13 +46,13 @@ pub enum PlayerEvent {
 
 #[derive(Debug, Clone)]
 pub struct PlayerHandle {
-    tx: mpsc::Sender<PlayerCommand>,
+    tx: mpsc::Sender<engine::Msg>,
 }
 
 impl PlayerHandle {
     pub fn send(&self, cmd: PlayerCommand) {
         // The engine only goes away when the app is exiting.
-        let _ = self.tx.send(cmd);
+        let _ = self.tx.send(engine::Msg::Command(cmd));
     }
 }
 
@@ -66,7 +66,7 @@ pub fn spawn(
     rt: tokio::runtime::Handle,
 ) -> anyhow::Result<(PlayerHandle, UnboundedReceiver<PlayerEvent>)> {
     let (tx, rx) = mpsc::channel();
-    let events = engine::start(rt, rx)?;
+    let events = engine::start(rt, tx.clone(), rx)?;
     Ok((PlayerHandle { tx }, events))
 }
 

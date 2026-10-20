@@ -5,6 +5,7 @@ use serde_json::json;
 use super::*;
 use crate::api::{Activity, MentalState, Serving};
 use crate::app::state::AppState;
+use crate::app::tests::reply;
 use crate::app::update::{Action, ApiReply, Intent, update};
 use crate::config::Config;
 use crate::player::PlayerEvent;
@@ -55,13 +56,10 @@ pub(crate) fn playing() -> AppState {
             recents: vec![serving("r1", "Drift")],
         }),
     );
-    update(
-        &mut s,
-        Action::Api(ApiReply::Servings {
-            intent: Intent::Now,
-            items: vec![serving("a", "Ascent")],
-        }),
-    );
+    {
+        let a = reply(&s, Intent::Now, vec![serving("a", "Ascent")]);
+        update(&mut s, a)
+    };
     update(
         &mut s,
         Action::Player(PlayerEvent::Started { id: "a".into() }),
@@ -192,4 +190,11 @@ fn renders_timer_overlay() {
     s.overlay = Some(crate::app::state::Overlay::Timer { sel: 1 });
     let out = text(&render(&s, 100, 30));
     assert!(out.contains("30 min") && out.contains("Intervals 25/5"));
+}
+
+#[test]
+fn renders_with_out_of_range_volume() {
+    let mut s = ready();
+    s.config.volume = 150;
+    render(&s, 80, 24);
 }

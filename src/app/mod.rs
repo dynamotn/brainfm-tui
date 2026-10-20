@@ -5,7 +5,7 @@ pub mod state;
 pub mod update;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -105,9 +105,17 @@ impl Runtime {
                     }
                 });
             }
-            Effect::StartSession { req, intent } => self.spawn(async move {
+            Effect::StartSession {
+                req,
+                intent,
+                generation,
+            } => self.spawn(async move {
                 match c.start_session(&uid, &req).await {
-                    Ok(items) => Action::Api(ApiReply::Servings { intent, items }),
+                    Ok(items) => Action::Api(ApiReply::Servings {
+                        intent,
+                        generation,
+                        items,
+                    }),
                     Err(e) => failed("session", &e),
                 }
             }),

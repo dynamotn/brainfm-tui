@@ -50,13 +50,10 @@ fn ready() -> AppState {
 
 fn playing() -> AppState {
     let mut s = ready();
-    update(
-        &mut s,
-        Action::Api(ApiReply::Servings {
-            intent: Intent::Now,
-            items: vec![serving("a")],
-        }),
-    );
+    {
+        let a = reply(&s, Intent::Now, vec![serving("a")]);
+        update(&mut s, a)
+    };
     update(
         &mut s,
         Action::Player(PlayerEvent::Started { id: "a".into() }),
@@ -86,13 +83,10 @@ fn space_from_idle_starts_session() {
 #[test]
 fn servings_now_loads_player() {
     let mut s = ready();
-    let fx = update(
-        &mut s,
-        Action::Api(ApiReply::Servings {
-            intent: Intent::Now,
-            items: vec![serving("a")],
-        }),
-    );
+    let fx = {
+        let a = reply(&s, Intent::Now, vec![serving("a")]);
+        update(&mut s, a)
+    };
     assert!(fx.contains(&Effect::Player(PlayerCommand::Load {
         id: "a".into(),
         url: "https://cdn/a.mp3".into(),
@@ -116,13 +110,10 @@ fn near_end_requests_next_then_queues() {
         Action::Player(PlayerEvent::NearEnd { id: "a".into() }),
     );
     assert!(has_session(&fx, Intent::Next));
-    let fx = update(
-        &mut s,
-        Action::Api(ApiReply::Servings {
-            intent: Intent::Next,
-            items: vec![serving("b")],
-        }),
-    );
+    let fx = {
+        let a = reply(&s, Intent::Next, vec![serving("b")]);
+        update(&mut s, a)
+    };
     assert!(
         matches!(fx.as_slice(), [Effect::Player(PlayerCommand::Queue { id, .. })] if id == "b")
     );
@@ -131,13 +122,10 @@ fn near_end_requests_next_then_queues() {
 #[test]
 fn ended_promotes_next_to_now() {
     let mut s = playing();
-    update(
-        &mut s,
-        Action::Api(ApiReply::Servings {
-            intent: Intent::Next,
-            items: vec![serving("b")],
-        }),
-    );
+    {
+        let a = reply(&s, Intent::Next, vec![serving("b")]);
+        update(&mut s, a)
+    };
     let fx = update(
         &mut s,
         Action::Player(PlayerEvent::Ended { id: "a".into() }),
@@ -203,13 +191,10 @@ fn repeated_player_errors_stop() {
 fn empty_session_shows_toast() {
     let mut s = ready();
     update(&mut s, key(' '));
-    let fx = update(
-        &mut s,
-        Action::Api(ApiReply::Servings {
-            intent: Intent::Now,
-            items: vec![],
-        }),
-    );
+    let fx = {
+        let a = reply(&s, Intent::Now, vec![]);
+        update(&mut s, a)
+    };
     assert!(fx.is_empty());
     assert_eq!(
         s.toast.as_ref().unwrap().text,
@@ -496,4 +481,178 @@ fn api_errors_map_to_reducer_kinds() {
     assert!(
         matches!(super::error_kind(&ApiError::RateLimited), ApiErrorKind::Other(m) if m.contains("rate limited"))
     );
+}
+
+pub(crate) fn reply(s: &AppState, intent: Intent, items: Vec<Serving>) -> Action {
+    Action::Api(ApiReply::Servings {
+        intent,
+        generation: s.session_gen,
+        items,
+    })
+}
+
+fn gen_of(fx: &[Effect]) -> u64 {
+    fx.iter()
+        .find_map(|e| match e {
+            Effect::StartSession { generation, .. } => Some(*generation),
+            _ => None,
+        })
+        .expect("a StartSession effect")
+}
+
+#[test]
+fn failed_skip_keeps_playing() {
+    let mut s = playing();
+    update(&mut s, key('n'));
+    assert_eq!(s.playback, Playback::Loading);
+    {
+        let a = reply(&s, Intent::Now, vec![]);
+        update(&mut s, a)
+    };
+    assert_eq!(s.playback, Playback::Playing);
+    assert_eq!(
+        update(&mut s, key(' ')),
+        vec![Effect::Player(PlayerCommand::Pause)]
+    );
+}
+
+#[test]
+fn session_error_during_skip_keeps_playing() {
+    let mut s = playing();
+    update(&mut s, key('n'));
+    update(
+        &mut s,
+        Action::Api(ApiReply::Failed {
+            what: "session",
+            error: ApiErrorKind::Other("500".into()),
+        }),
+    );
+    assert_eq!(s.playback, Playback::Playing);
+}
+
+#[test]
+fn unauthorized_during_skip_pauses_engine() {
+    let mut s = playing();
+    update(&mut s, key('n'));
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Failed {
+            what: "session",
+            error: ApiErrorKind::Unauthorized,
+        }),
+    );
+    assert!(fx.contains(&Effect::Player(PlayerCommand::Pause)));
+    assert_eq!(s.playback, Playback::Paused);
+}
+
+#[test]
+fn serving_without_url_does_not_hang() {
+    let mut s = ready();
+    update(&mut s, key(' '));
+    let bad: Serving = serde_json::from_value(json!({
+        "track": {"id": "x", "name": "X", "tags": []},
+        "trackVariation": {"id": "vx", "lengthInSeconds": 10}
+    }))
+    .unwrap();
+    let fx = {
+        let a = reply(&s, Intent::Now, vec![bad]);
+        update(&mut s, a)
+    };
+    assert!(fx.is_empty());
+    assert_eq!(s.playback, Playback::Idle);
+}
+
+#[test]
+fn stale_servings_reply_ignored() {
+    let mut s = playing();
+    let first = gen_of(&update(&mut s, key('n')));
+    update(&mut s, code(KeyCode::Tab));
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Servings {
+            intent: Intent::Now,
+            generation: first,
+            items: vec![serving("old")],
+        }),
+    );
+    assert!(fx.is_empty());
+    assert_eq!(s.now.as_ref().unwrap().track.id, "a");
+}
+
+#[test]
+fn next_reply_after_session_end_ignored() {
+    let mut s = playing();
+    let g = gen_of(&update(
+        &mut s,
+        Action::Player(PlayerEvent::NearEnd { id: "a".into() }),
+    ));
+    s.timer = Timer::new(TimerMode::Countdown(Duration::from_secs(1)));
+    s.timer.start();
+    update(&mut s, Action::Tick(Duration::from_secs(2)));
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Servings {
+            intent: Intent::Next,
+            generation: g,
+            items: vec![serving("b")],
+        }),
+    );
+    assert!(fx.is_empty());
+}
+
+#[test]
+fn events_for_unknown_tracks_ignored() {
+    let mut s = playing();
+    let fx = update(
+        &mut s,
+        Action::Player(PlayerEvent::Error {
+            id: "zzz".into(),
+            message: "late".into(),
+        }),
+    );
+    assert!(fx.is_empty());
+    assert_eq!(s.playback, Playback::Playing);
+    update(&mut s, key('n'));
+    update(
+        &mut s,
+        Action::Player(PlayerEvent::Started { id: "zzz".into() }),
+    );
+    assert_eq!(s.playback, Playback::Loading);
+}
+
+#[test]
+fn queued_track_still_promotes_after_failed_skip() {
+    let mut s = playing();
+    {
+        let a = reply(&s, Intent::Next, vec![serving("b")]);
+        update(&mut s, a)
+    };
+    update(&mut s, key('n'));
+    {
+        let a = reply(&s, Intent::Now, vec![]);
+        update(&mut s, a)
+    };
+    update(
+        &mut s,
+        Action::Player(PlayerEvent::Started { id: "b".into() }),
+    );
+    assert_eq!(s.now.as_ref().unwrap().track.id, "b");
+}
+
+#[test]
+fn loading_watchdog_gives_up() {
+    let mut s = ready();
+    let g = gen_of(&update(&mut s, key(' ')));
+    update(&mut s, Action::Tick(Duration::from_secs(31)));
+    assert_eq!(s.playback, Playback::Idle);
+    assert!(s.toast.as_ref().unwrap().text.contains("Timed out"));
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Servings {
+            intent: Intent::Now,
+            generation: g,
+            items: vec![serving("a")],
+        }),
+    );
+    assert!(fx.is_empty());
 }

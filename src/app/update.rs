@@ -13,6 +13,7 @@ const MAX_ERRORS_IN_A_ROW: u32 = 3;
 const END_FADE: Duration = Duration::from_secs(3);
 const QUIT_FADE: Duration = Duration::from_millis(500);
 const VOLUME_STEP: u8 = 10;
+const LOADING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKey {
@@ -49,6 +50,7 @@ pub enum ApiReply {
     },
     Servings {
         intent: Intent,
+        generation: u64,
         items: Vec<Serving>,
     },
     Library {
@@ -81,6 +83,7 @@ pub enum Effect {
     StartSession {
         req: SessionRequest,
         intent: Intent,
+        generation: u64,
     },
     Player(PlayerCommand),
     SetFavorite {
@@ -130,12 +133,28 @@ fn save_config(s: &AppState, fx: &mut Vec<Effect>) {
 fn start_session(s: &mut AppState, intent: Intent, fx: &mut Vec<Effect>) {
     match s.session_request() {
         Some(req) => {
+            s.session_gen += 1;
             if intent == Intent::Now {
+                if s.playback != Playback::Loading {
+                    s.resume_to = s.playback;
+                }
                 s.playback = Playback::Loading;
+                s.loading_for = Duration::ZERO;
             }
-            fx.push(Effect::StartSession { req, intent });
+            fx.push(Effect::StartSession {
+                req,
+                intent,
+                generation: s.session_gen,
+            });
         }
         None => toast(s, "Still loading mental states…"),
+    }
+}
+
+/// A `Loading` request failed: go back to whatever the engine is still doing.
+fn abort_loading(s: &mut AppState) {
+    if s.playback == Playback::Loading {
+        s.playback = s.resume_to;
     }
 }
 
@@ -153,7 +172,11 @@ fn load(s: &mut AppState, serving: Serving, fx: &mut Vec<Effect>) {
             s.next = None;
             s.now = Some(serving);
         }
-        None => toast(s, "That track has no audio URL"),
+        None => {
+            s.errors_in_a_row += 1;
+            abort_loading(s);
+            toast(s, "That track has no audio URL");
+        }
     }
 }
 
@@ -175,7 +198,6 @@ fn toggle_play(s: &mut AppState, fx: &mut Vec<Effect>) {
 }
 
 fn skip(s: &mut AppState, fx: &mut Vec<Effect>) {
-    s.next = None;
     start_session(s, Intent::Now, fx);
 }
 
@@ -445,10 +467,20 @@ fn on_tick(s: &mut AppState, dt: Duration, fx: &mut Vec<Effect>) {
             s.toast = None;
         }
     }
+    if s.playback == Playback::Loading {
+        s.loading_for += dt;
+        if s.loading_for >= LOADING_TIMEOUT {
+            s.session_gen += 1;
+            s.errors_in_a_row += 1;
+            abort_loading(s);
+            toast(s, "Timed out loading a track — press space to retry");
+        }
+    }
     match s.timer.tick(dt) {
         Some(TimerEvent::Finished) => {
             fx.push(Effect::Player(PlayerCommand::Stop { fade: END_FADE }));
             s.playback = Playback::Idle;
+            s.session_gen += 1;
             s.next = None;
             toast(s, "Session complete");
         }
@@ -473,6 +505,8 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
         PlayerEvent::Started { id } => {
             if s.next.as_ref().is_some_and(|n| n.track.id == id) {
                 s.now = s.next.take();
+            } else if !s.now.as_ref().is_some_and(|n| n.track.id == id) {
+                return;
             }
             s.playback = Playback::Playing;
             s.position = Duration::ZERO;
@@ -498,6 +532,9 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
             if s.next.as_ref().is_some_and(|n| n.track.id == id) {
                 // The queued track failed; a fresh one is fetched when this one ends.
                 s.next = None;
+                return;
+            }
+            if !s.now.as_ref().is_some_and(|n| n.track.id == id) {
                 return;
             }
             s.errors_in_a_row += 1;
@@ -536,7 +573,12 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
                 s.genres = items;
             }
         }
-        ApiReply::Servings { intent, items } => match (intent, items.into_iter().next()) {
+        ApiReply::Servings { generation, .. } if generation != s.session_gen => {}
+        ApiReply::Servings {
+            intent: Intent::Next,
+            ..
+        } if s.next.is_some() || !matches!(s.playback, Playback::Playing | Playback::Paused) => {}
+        ApiReply::Servings { intent, items, .. } => match (intent, items.into_iter().next()) {
             (Intent::Now, Some(serving)) => load(s, serving, fx),
             (Intent::Next, Some(serving)) => {
                 if let Some(url) = serving.track_variation.stream_url() {
@@ -551,7 +593,7 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
             (intent, None) => {
                 toast(s, "No tracks match these filters");
                 if intent == Intent::Now {
-                    s.playback = Playback::Idle;
+                    abort_loading(s);
                 }
             }
         },
@@ -568,12 +610,11 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
         }
         ApiReply::Failed { what, error } => match error {
             ApiErrorKind::Unauthorized => {
+                abort_loading(s);
                 if s.playback == Playback::Playing {
                     fx.push(Effect::Player(PlayerCommand::Pause));
                     s.timer.pause();
                     s.playback = Playback::Paused;
-                } else if s.playback == Playback::Loading {
-                    s.playback = Playback::Idle;
                 }
                 let message = (what == "login").then(|| "Wrong email or password".to_owned());
                 match &mut s.overlay {
@@ -597,8 +638,8 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
                     *error = Some(msg);
                     return;
                 }
-                if what == "session" && s.playback == Playback::Loading {
-                    s.playback = Playback::Idle;
+                if what == "session" {
+                    abort_loading(s);
                 }
                 toast(s, format!("Could not load {what}: {msg}"));
             }

@@ -78,3 +78,52 @@ async fn streams_and_continues_gaplessly() {
         ["start:a", "near:a", "end:a", "start:b", "near:b", "end:b"]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs ffmpeg and an audio device"]
+async fn stalled_stream_does_not_block_next_load() {
+    let server = MockServer::start().await;
+    Mock::given(path("/stall.mp3"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(120)))
+        .mount(&server)
+        .await;
+    Mock::given(path("/ok.mp3"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/mpeg")
+                .set_body_bytes(sine_mp3(440, 2)),
+        )
+        .mount(&server)
+        .await;
+
+    let (p, mut events) = player::spawn(tokio::runtime::Handle::current()).unwrap();
+    p.send(PlayerCommand::SetVolume(0.05));
+    let len = Duration::from_secs(2);
+    p.send(PlayerCommand::Load {
+        id: "stall".into(),
+        url: format!("{}/stall.mp3", server.uri()),
+        length: len,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    p.send(PlayerCommand::Load {
+        id: "ok".into(),
+        url: format!("{}/ok.mp3", server.uri()),
+        length: len,
+    });
+
+    let started = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.recv().await {
+                Some(PlayerEvent::Started { id }) => break id,
+                Some(_) => {}
+                None => panic!("engine gone"),
+            }
+        }
+    })
+    .await
+    .expect("second Load must not wait behind the stalled one");
+    assert_eq!(started, "ok");
+    p.send(PlayerCommand::Stop {
+        fade: Duration::ZERO,
+    });
+}

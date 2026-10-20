@@ -265,7 +265,7 @@ fn draw_controls(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         .is_some_and(|n| s.favorite_ids.contains(&n.track.id));
     let key = |k: &'static str| Span::styled(format!(" {k}   "), t.dim());
     let vol = s.config.volume;
-    let bars = usize::from(vol / 10);
+    let bars = usize::from(vol.min(100) / 10);
     let line = Line::from(vec![
         Span::styled(if playing { g.pause } else { g.play }, t.accent()),
         key("space"),
@@ -280,7 +280,10 @@ fn draw_controls(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         key("d"),
         Span::styled(format!("{} ", g.volume), Style::new().fg(t.text)),
         Span::styled("▮".repeat(bars), Style::new().fg(t.purple)),
-        Span::styled("▯".repeat(10 - bars), Style::new().fg(t.surface_hi)),
+        Span::styled(
+            "▯".repeat(10usize.saturating_sub(bars)),
+            Style::new().fg(t.surface_hi),
+        ),
         Span::styled(format!(" {vol}%"), t.dim()),
     ]);
     f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);

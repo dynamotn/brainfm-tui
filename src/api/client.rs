@@ -1,6 +1,7 @@
 //! HTTP client for `api.brain.fm`, mimicking the requests the web app sends.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Method, StatusCode};
@@ -94,6 +95,8 @@ impl ApiClient {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .default_headers(headers)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("static reqwest config is valid");
         Self {

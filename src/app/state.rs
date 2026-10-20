@@ -122,6 +122,11 @@ pub struct AppState {
     pub toast: Option<Toast>,
     pub user_id: Option<String>,
     pub errors_in_a_row: u32,
+    /// Bumped on every session request; replies carrying an older value are stale.
+    pub session_gen: u64,
+    /// What `playback` returns to if a `Loading` request fails.
+    pub resume_to: Playback,
+    pub loading_for: Duration,
     pub quit: bool,
 }
 
@@ -155,6 +160,9 @@ impl AppState {
             toast: None,
             user_id,
             errors_in_a_row: 0,
+            session_gen: 0,
+            resume_to: Playback::Idle,
+            loading_for: Duration::ZERO,
             quit: false,
         }
     }
