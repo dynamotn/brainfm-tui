@@ -1,6 +1,4 @@
-mod app;
-mod cli;
-
+use brainfm::{app, cli};
 use clap::Parser;
 
 #[tokio::main]
