@@ -71,6 +71,36 @@ enum GenreItem {
     },
 }
 
+/// Library lists hold either servings or objects wrapping one.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LibraryItem {
+    Serving(Serving),
+    Wrapped { serving: Serving },
+}
+
+fn unwrap_library(items: Vec<LibraryItem>) -> Vec<Serving> {
+    items
+        .into_iter()
+        .map(|i| match i {
+            LibraryItem::Serving(s) | LibraryItem::Wrapped { serving: s } => s,
+        })
+        .collect()
+}
+
+/// The live API groups genres; older shapes were a flat list.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GenreList {
+    Grouped {
+        #[serde(default, rename = "baseGenreNames")]
+        base: Vec<GenreItem>,
+        #[serde(default, rename = "natureGenreNames")]
+        nature: Vec<GenreItem>,
+    },
+    Flat(Vec<GenreItem>),
+}
+
 fn safe_id(id: &str) -> ApiResult<&str> {
     let ok = !id.is_empty()
         && id
@@ -222,9 +252,13 @@ impl ApiClient {
 
     pub async fn genres(&self, state_id: &str) -> ApiResult<Vec<String>> {
         let id = safe_id(state_id)?;
-        let items: Vec<GenreItem> = self
+        let list: GenreList = self
             .get(3, &format!("/mentalStates/dynamic/{id}/genres"))
             .await?;
+        let items = match list {
+            GenreList::Grouped { base, nature } => base.into_iter().chain(nature).collect(),
+            GenreList::Flat(items) => items,
+        };
         Ok(items
             .into_iter()
             .filter_map(|g| match g {
@@ -253,14 +287,18 @@ impl ApiClient {
 
     pub async fn favorites(&self, uid: &str) -> ApiResult<Vec<Serving>> {
         let uid = safe_id(uid)?;
-        self.get(3, &format!("/users/{uid}/servings/favorites?version=2"))
-            .await
+        let items = self
+            .get(3, &format!("/users/{uid}/servings/favorites?version=2"))
+            .await?;
+        Ok(unwrap_library(items))
     }
 
     pub async fn recents(&self, uid: &str) -> ApiResult<Vec<Serving>> {
         let uid = safe_id(uid)?;
-        self.get(3, &format!("/users/{uid}/servings/recent?platform=web"))
-            .await
+        let items = self
+            .get(3, &format!("/users/{uid}/servings/recent?platform=web"))
+            .await?;
+        Ok(unwrap_library(items))
     }
 
     pub async fn set_favorite(&self, uid: &str, track_id: &str, on: bool) -> ApiResult<()> {

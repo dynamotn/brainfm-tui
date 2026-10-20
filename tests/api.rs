@@ -217,3 +217,37 @@ async fn library_endpoints_use_v3() {
     c.favorites("u1").await.unwrap();
     c.recents("u1").await.unwrap();
 }
+
+#[tokio::test]
+async fn genres_accept_base_and_nature_groups() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v3/mentalStates/dynamic/focus/genres"))
+        .respond_with(ok(json!({
+            "baseGenreNames": ["Piano", "Electronic"],
+            "natureGenreNames": ["Rain"]
+        })))
+        .mount(&server)
+        .await;
+    let genres = client(&server).genres("focus").await.unwrap();
+    assert_eq!(genres, vec!["Piano", "Electronic", "Rain"]);
+}
+
+#[tokio::test]
+async fn library_accepts_wrapped_servings() {
+    let server = MockServer::start().await;
+    let serving = json!({
+        "track": {"id": "t1", "name": "Lumen", "tags": []},
+        "trackVariation": {"id": "v1", "url": "a.mp3", "lengthInSeconds": 10}
+    });
+    Mock::given(method("GET"))
+        .and(path("/v3/users/u1/servings/favorites"))
+        .respond_with(ok(
+            json!([{"serving": serving, "genreName": "Piano"}, serving]),
+        ))
+        .mount(&server)
+        .await;
+    let favs = client(&server).favorites("u1").await.unwrap();
+    assert_eq!(favs.len(), 2);
+    assert!(favs.iter().all(|s| s.track.name == "Lumen"));
+}
