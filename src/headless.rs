@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 
-use crate::api::{ApiClient, EffectLevel, Serving, SessionRequest};
+use crate::api::{ApiClient, ApiError, EffectLevel, Serving, SessionRequest};
 use crate::cli::{PlayArgs, client_from_store, resolve_activity, resolve_state};
 use crate::config::{Config, StatePrefs};
 use crate::player::{self, PlayerCommand, PlayerEvent};
@@ -31,6 +31,44 @@ pub fn build_request(
         genres.to_vec()
     };
     SessionRequest::new(activity_id, effects, genres)
+}
+
+const RETRIES: u32 = 3;
+const RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// Runs `f` up to `attempts` times with a doubling delay. An expired session
+/// is returned at once since retrying cannot fix it.
+pub async fn retry<T, F, Fut>(attempts: u32, delay: Duration, mut f: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    let mut wait = delay;
+    let mut last = None;
+    for _ in 0..attempts {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) if matches!(e.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)) => {
+                return Err(e);
+            }
+            Err(e) => {
+                tracing::warn!("retrying after: {e:#}");
+                last = Some(e);
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no attempts made")))
+}
+
+/// A failed *queued* track only drops the prefetch; the current track plays on.
+pub fn error_needs_reload(id: &str, next: &mut Option<Serving>) -> bool {
+    if next.as_ref().is_some_and(|n| n.track.id == id) {
+        *next = None;
+        return false;
+    }
+    true
 }
 
 async fn next_serving(
@@ -125,8 +163,13 @@ pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
     let mut errors = 0u32;
     let mut ticker = tokio::time::interval(TICK);
     let mut out = std::io::stderr();
+    let fetch = || {
+        retry(RETRIES, RETRY_DELAY, || {
+            next_serving(&client, &session.user_id, &req)
+        })
+    };
 
-    loop {
+    let result: anyhow::Result<()> = async { loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 player.send(PlayerCommand::Stop { fade: Duration::from_secs(1) });
@@ -142,24 +185,33 @@ pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
                     timer.start();
                 }
                 PlayerEvent::Position { pos: p, .. } => pos = p,
-                PlayerEvent::NearEnd { .. } => {
-                    let s = next_serving(&client, &session.user_id, &req).await?;
-                    player.send(command_for(&s, true)?);
-                    next = Some(s);
-                }
+                PlayerEvent::NearEnd { .. } => match fetch().await {
+                    Ok(s) => {
+                        player.send(command_for(&s, true)?);
+                        next = Some(s);
+                    }
+                    // Not fatal: another attempt is made when this track ends.
+                    Err(e) if !matches!(e.downcast_ref::<ApiError>(), Some(ApiError::Unauthorized)) => {
+                        tracing::warn!("prefetch failed: {e:#}");
+                    }
+                    Err(e) => return Err(e),
+                },
                 PlayerEvent::Ended { .. } => {
                     if next.is_none() {
-                        now = next_serving(&client, &session.user_id, &req).await?;
+                        now = fetch().await?;
                         player.send(command_for(&now, false)?);
                     }
                 }
-                PlayerEvent::Error { message, .. } => {
+                PlayerEvent::Error { id, message } => {
+                    if !error_needs_reload(&id, &mut next) {
+                        continue;
+                    }
                     errors += 1;
                     if errors >= MAX_CONSECUTIVE_ERRORS {
                         bail!("{message} (giving up after {errors} failed tracks)");
                     }
                     writeln!(out, "\r\x1b[2K! {message}, skipping")?;
-                    now = next_serving(&client, &session.user_id, &req).await?;
+                    now = fetch().await?;
                     player.send(command_for(&now, false)?);
                 }
             },
@@ -180,8 +232,15 @@ pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
                 out.flush()?;
             }
         }
+    } Ok(()) }.await;
+    // Clear the status line so any error prints on a line of its own.
+    write!(out, "\r\x1b[2K")?;
+    if result.is_err() {
+        player.send(PlayerCommand::Stop {
+            fade: Duration::ZERO,
+        });
+        return result;
     }
-    writeln!(out)?;
     // Give the engine time to finish its fade before the process exits.
     tokio::time::sleep(Duration::from_millis(3200)).await;
     if timer.display().is_zero() && !matches!(timer.mode(), TimerMode::Infinite) {
@@ -193,6 +252,50 @@ pub async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn serving(id: &str) -> Serving {
+        serde_json::from_value(serde_json::json!({
+            "track": {"id": id, "name": id, "tags": []},
+            "trackVariation": {"id": "v", "url": "x.mp3", "lengthInSeconds": 10}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn queued_error_only_clears_next() {
+        let mut next = Some(serving("b"));
+        assert!(!error_needs_reload("b", &mut next));
+        assert!(next.is_none());
+        assert!(error_needs_reload("a", &mut next));
+    }
+
+    #[tokio::test]
+    async fn retry_recovers_after_transient_failures() {
+        let calls = AtomicU32::new(0);
+        let out = retry(3, Duration::ZERO, || async {
+            if calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                anyhow::bail!("transient")
+            }
+            Ok(7)
+        })
+        .await
+        .unwrap();
+        assert_eq!(out, 7);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_gives_up() {
+        let calls = AtomicU32::new(0);
+        let r: anyhow::Result<()> = retry(3, Duration::ZERO, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("down")
+        })
+        .await;
+        assert!(r.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
     use crate::api::EffectLevel;
     use crate::config::StatePrefs;
 
