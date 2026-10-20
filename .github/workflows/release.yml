@@ -68,7 +68,7 @@ jobs:
         run: |
           name="brainfm-${TAG}-${TARGET}"
           mkdir -p "dist/$name"
-          cp "target/$TARGET/release/brainfm" README.md "dist/$name/"
+          cp "target/$TARGET/release/brainfm" README.md LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           echo "name=$name" >> "$GITHUB_OUTPUT"

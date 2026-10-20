@@ -118,6 +118,11 @@ same private API as the web app, so it can break whenever that API changes.
 You need a Brain.fm subscription. Use it at your own risk and within
 [Brain.fm's Terms](https://www.brain.fm/terms).
 
+## License
+
+[MIT](LICENSE). Brain.fm is a trademark of its owner; this project is not
+affiliated with it.
+
 ## Development
 
 ```sh
