@@ -1,0 +1,29 @@
+---
+source: src/ui/tests.rs
+assertion_line: 98
+expression: t.backend()
+---
+" brain.fm     Focus    Relax    Sleep    Meditate                               "
+"             ▔▔▔▔▔▔▔                                                            "
+"                                                                                "
+"   Deep Work v    Neural effect □□□ Any    All genres                           "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                    ▄█▀▀▀█▄ ▄█▀▀▀█▄   ▄▄    ▄█▀▀▀█▄ ▄█▀▀▀█▄                     "
+"                    ██ ▄███ ██ ▄███   ▀▀    ██ ▄███ ██ ▄███                     "
+"                    ███▀ ██ ███▀ ██   ▄▄    ███▀ ██ ███▀ ██                     "
+"                     ▀▀▀▀▀   ▀▀▀▀▀    ▀▀     ▀▀▀▀▀   ▀▀▀▀▀                      "
+"                              Press space to start                              "
+"                        Infinite  ·  Timer  ·  Intervals                        "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                        Focus music, made for your brain                        "
+"                                                                                "
+"                                                                                "
+"    ---------------------------------------------------------- 00:00 / 00:00    "
+"                > space   >> n   <3 f   x d   vol ▮▮▮▮▮▮▮▯▯▯ 70%                "
+"                                                                                "
+"                                                                                "
+" space play  n skip  f fav  d dislike  tab state  a activity  g genres          "
