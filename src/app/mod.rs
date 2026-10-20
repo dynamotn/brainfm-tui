@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
 
 use crate::api::client::DEFAULT_BASE;
@@ -196,10 +198,18 @@ fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard>
     crate::session::ensure_private_dir(&dir)?;
     let (writer, guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::never(&dir, "brainfm.log"));
-    let _ = tracing_subscriber::fmt()
-        .with_writer(writer)
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
+    // stream-download logs full request URLs, and signed audio URLs carry
+    // short-lived credentials, so its logs are dropped.
+    let filter = tracing_subscriber::filter::Targets::new()
+        .with_default(tracing::Level::INFO)
+        .with_target("stream_download", tracing::level_filters::LevelFilter::OFF);
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_ansi(false),
+        )
+        .with(filter)
         .try_init();
     Ok(guard)
 }

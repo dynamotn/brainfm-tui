@@ -2,7 +2,7 @@
 
 mod engine;
 
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -46,9 +46,20 @@ pub enum PlayerEvent {
     Error { id: String, message: String },
 }
 
+/// Stops the engine thread when the last [`PlayerHandle`] clone is dropped.
+#[derive(Debug)]
+struct ShutdownOnDrop(mpsc::Sender<engine::Msg>);
+
+impl Drop for ShutdownOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(engine::Msg::Shutdown);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlayerHandle {
     tx: mpsc::Sender<engine::Msg>,
+    _shutdown: Arc<ShutdownOnDrop>,
 }
 
 impl PlayerHandle {
@@ -58,18 +69,61 @@ impl PlayerHandle {
     }
 }
 
+/// Replaces the query string of every URL with `?…`: signed audio URLs carry
+/// short-lived credentials there and must not reach logs or the screen.
+pub fn redact_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = ["https://", "http://"]
+        .iter()
+        .filter_map(|p| rest.find(p))
+        .min()
+    {
+        out.push_str(&rest[..start]);
+        let url_len = rest[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '>'))
+            .unwrap_or(rest.len() - start);
+        let url = &rest[start..start + url_len];
+        match url.find('?') {
+            Some(q) => {
+                out.push_str(&url[..=q]);
+                out.push('…');
+            }
+            None => out.push_str(url),
+        }
+        rest = &rest[start + url_len..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// True once per track when it is within [`PREFETCH_LEAD`] of its end.
 pub fn near_end(length: Duration, pos: Duration, already: bool) -> bool {
     !already && !length.is_zero() && length.saturating_sub(pos) <= PREFETCH_LEAD
 }
 
-/// Opens the default audio device and starts the engine thread.
-pub fn spawn(
-    rt: tokio::runtime::Handle,
-) -> anyhow::Result<(PlayerHandle, UnboundedReceiver<PlayerEvent>)> {
+type Spawned = anyhow::Result<(PlayerHandle, UnboundedReceiver<PlayerEvent>)>;
+
+/// Opens the default audio device and starts the engine thread. Audio is only
+/// fetched over HTTPS.
+pub fn spawn(rt: tokio::runtime::Handle) -> Spawned {
+    spawn_with(rt, true)
+}
+
+/// Like [`spawn`] but allows plain-HTTP audio, for tests against local servers.
+#[doc(hidden)]
+pub fn spawn_insecure(rt: tokio::runtime::Handle) -> Spawned {
+    spawn_with(rt, false)
+}
+
+fn spawn_with(rt: tokio::runtime::Handle, https_only: bool) -> Spawned {
     let (tx, rx) = mpsc::channel();
-    let events = engine::start(rt, tx.clone(), rx)?;
-    Ok((PlayerHandle { tx }, events))
+    let events = engine::start(rt, tx.clone(), rx, https_only)?;
+    let handle = PlayerHandle {
+        _shutdown: Arc::new(ShutdownOnDrop(tx.clone())),
+        tx,
+    };
+    Ok((handle, events))
 }
 
 #[cfg(test)]
@@ -87,5 +141,25 @@ mod tests {
     #[test]
     fn near_end_ignores_unknown_length() {
         assert!(!near_end(Duration::ZERO, Duration::from_secs(5), false));
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::*;
+
+    #[test]
+    fn redacts_signed_query_strings() {
+        let msg = "HTTP 403 for url (https://cdn.brain.fm/a/b.mp3?Expires=1&Signature=abc&Key-Pair-Id=K) and http://x.y/z?t=1.";
+        let out = redact_urls(msg);
+        assert!(!out.contains("Signature"), "{out}");
+        assert!(!out.contains("t=1"), "{out}");
+        assert!(out.contains("https://cdn.brain.fm/a/b.mp3?…"), "{out}");
+        assert!(out.contains("http://x.y/z?…"), "{out}");
+    }
+
+    #[test]
+    fn leaves_plain_text_alone() {
+        assert_eq!(redact_urls("timed out"), "timed out");
     }
 }

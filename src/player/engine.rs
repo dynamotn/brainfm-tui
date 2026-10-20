@@ -30,6 +30,7 @@ type TrackSource = Decoder<StreamDownload<MemoryStorageProvider>>;
 
 pub(super) enum Msg {
     Command(PlayerCommand),
+    Shutdown,
     Opened {
         generation: u64,
         replace: bool,
@@ -64,12 +65,13 @@ pub(super) fn start(
     rt: tokio::runtime::Handle,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
+    https_only: bool,
 ) -> anyhow::Result<UnboundedReceiver<PlayerEvent>> {
     let (ev_tx, ev_rx) = unbounded_channel();
     let (ready_tx, ready_rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("brainfm-audio".into())
-        .spawn(move || match Engine::open(rt, tx, ev_tx) {
+        .spawn(move || match Engine::open(rt, tx, ev_tx, https_only) {
             Ok(mut engine) => {
                 let _ = ready_tx.send(Ok(()));
                 engine.run(rx);
@@ -113,6 +115,7 @@ impl Engine {
         rt: tokio::runtime::Handle,
         msgs: mpsc::Sender<Msg>,
         events: UnboundedSender<PlayerEvent>,
+        https_only: bool,
     ) -> anyhow::Result<Self> {
         let mut sink = DeviceSinkBuilder::from_default_device()
             .context("no audio output device")?
@@ -125,6 +128,7 @@ impl Engine {
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
+            .https_only(https_only)
             .build()
             .context("building audio http client")?;
         Ok(Self {
@@ -150,6 +154,7 @@ impl Engine {
         loop {
             match rx.recv_timeout(POLL) {
                 Ok(Msg::Command(cmd)) => self.handle(cmd),
+                Ok(Msg::Shutdown) => return,
                 Ok(Msg::Opened {
                     generation,
                     replace,
@@ -176,21 +181,19 @@ impl Engine {
             self.msgs.clone(),
             self.generation,
         );
-        let spawned = std::thread::Builder::new()
-            .name("brainfm-open".into())
-            .spawn(move || {
-                let result = open_source(&rt, http, &url);
-                let _ = tx.send(Msg::Opened {
-                    generation,
-                    replace,
-                    id,
-                    length,
-                    result,
-                });
+        // Opening blocks on the network and on decoder probe reads; tokio's
+        // blocking pool reuses threads across tracks.
+        let handle = rt.clone();
+        drop(handle.spawn_blocking(move || {
+            let result = open_source(&rt, http, &url);
+            let _ = tx.send(Msg::Opened {
+                generation,
+                replace,
+                id,
+                length,
+                result,
             });
-        if let Err(e) = spawned {
-            tracing::warn!("could not spawn stream opener: {e}");
-        }
+        }));
     }
 
     /// Drops whatever is playing without blocking on the audio callback.
@@ -216,7 +219,7 @@ impl Engine {
             Err(e) => {
                 self.emit(PlayerEvent::Error {
                     id,
-                    message: format!("{e:#}"),
+                    message: super::redact_urls(&format!("{e:#}")),
                 });
                 return;
             }

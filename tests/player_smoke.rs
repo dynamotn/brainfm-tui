@@ -34,7 +34,7 @@ async fn streams_and_continues_gaplessly() {
             .await;
     }
 
-    let (p, mut events) = player::spawn(tokio::runtime::Handle::current()).unwrap();
+    let (p, mut events) = player::spawn_insecure(tokio::runtime::Handle::current()).unwrap();
     p.send(PlayerCommand::SetVolume(0.05));
     let len = Duration::from_secs(3);
     p.send(PlayerCommand::Load {
@@ -96,7 +96,7 @@ async fn stalled_stream_does_not_block_next_load() {
         .mount(&server)
         .await;
 
-    let (p, mut events) = player::spawn(tokio::runtime::Handle::current()).unwrap();
+    let (p, mut events) = player::spawn_insecure(tokio::runtime::Handle::current()).unwrap();
     p.send(PlayerCommand::SetVolume(0.05));
     let len = Duration::from_secs(2);
     p.send(PlayerCommand::Load {
@@ -126,4 +126,23 @@ async fn stalled_stream_does_not_block_next_load() {
     p.send(PlayerCommand::Stop {
         fade: Duration::ZERO,
     });
+}
+
+fn audio_threads() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
+        .filter(|c| c.trim() == "brainfm-audio")
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs an audio device"]
+async fn dropping_the_handle_stops_the_engine() {
+    let before = audio_threads();
+    let (p, events) = player::spawn_insecure(tokio::runtime::Handle::current()).unwrap();
+    assert_eq!(audio_threads(), before + 1);
+    drop((p, events));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(audio_threads(), before);
 }
