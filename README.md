@@ -21,7 +21,7 @@ plays in-process, so you don't need mpv or vlc.
 
 ## Install
 
-You need a Rust toolchain. On Linux you also need the ALSA and D-Bus
+You need Rust 1.91 or newer. On Linux you also need the ALSA and D-Bus
 development headers: `alsa-lib` and `dbus` on Arch, or `libasound2-dev` and
 `libdbus-1-dev` on Debian/Ubuntu.
 
@@ -113,4 +113,5 @@ You need a Brain.fm subscription. Use it at your own risk and within
 cargo test                                            # unit, API (wiremock) and UI snapshot tests
 cargo test --test player_smoke -- --ignored           # real audio; needs ffmpeg + a sound card
 prek run --all-files                                  # fmt, clippy, tests
+cargo deny check                                      # advisories, licenses, sources
 ```
