@@ -37,6 +37,7 @@ pub fn error_kind(e: &ApiError) -> ApiErrorKind {
 }
 
 fn failed(what: &'static str, e: &ApiError) -> Action {
+    tracing::warn!("{what} failed: {e}");
     Action::Api(ApiReply::Failed {
         what,
         error: error_kind(e),

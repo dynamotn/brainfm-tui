@@ -26,13 +26,25 @@ pub enum ApiError {
     Status { code: u16, message: String },
     #[error("refusing to use unsafe id {0:?}")]
     InvalidId(String),
-    #[error("network error: {0}")]
+    #[error("network error: {}", with_causes(.0))]
     Network(#[from] reqwest::Error),
     #[error("unexpected response: {0}")]
     Decode(String),
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+/// reqwest's own message hides the cause (timeout, reset, TLS…); append it.
+fn with_causes(e: &reqwest::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = std::error::Error::source(e);
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
 
 type TokenCallback = Arc<dyn Fn(&str) + Send + Sync>;
 

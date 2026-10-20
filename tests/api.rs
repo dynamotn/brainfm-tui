@@ -251,3 +251,20 @@ async fn library_accepts_wrapped_servings() {
     assert_eq!(favs.len(), 2);
     assert!(favs.iter().all(|s| s.track.name == "Lumen"));
 }
+
+#[tokio::test]
+async fn network_errors_show_their_cause() {
+    // Nothing listens on port 9 (discard) on loopback in the test environment.
+    let c = ApiClient::new(Url::parse("http://127.0.0.1:9").unwrap());
+    let err = c.mental_states().await.unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("refused") || text.contains("connect"),
+        "{text}"
+    );
+    assert!(text.contains(':'), "cause chain missing: {text}");
+    assert!(
+        text.matches(": ").count() >= 2,
+        "cause chain missing: {text}"
+    );
+}
