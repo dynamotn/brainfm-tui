@@ -3,7 +3,7 @@
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -38,6 +38,17 @@ pub fn user_id_from_jwt(token: &str) -> anyhow::Result<String> {
         Some(id) if !id.is_empty() => Ok(id.to_owned()),
         _ => bail!("token has no user id"),
     }
+}
+
+/// Creates `dir` (and parents) and makes sure it is mode 0700 even if it existed.
+pub fn ensure_private_dir(dir: &Path) -> anyhow::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("restricting {}", dir.display()))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,27 +93,19 @@ impl SessionStore {
     pub fn save(&self, token: &str) -> anyhow::Result<Session> {
         let user_id = user_id_from_jwt(token)?;
         let dir = self.path.parent().context("session path has no parent")?;
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
-        let tmp = self.path.with_extension("json.tmp");
-        {
-            let mut f = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)
-                .with_context(|| format!("writing {}", tmp.display()))?;
-            let body = serde_json::to_string(&SessionFile {
-                token: token.to_owned(),
-            })?;
-            f.write_all(body.as_bytes())?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp, &self.path).with_context(|| format!("writing {}", self.path.display()))?;
+        ensure_private_dir(dir)?;
+        // A unique temp file per write: token refreshes can race each other.
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .with_context(|| format!("writing into {}", dir.display()))?;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+        let body = serde_json::to_string(&SessionFile {
+            token: token.to_owned(),
+        })?;
+        tmp.write_all(body.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(&self.path)
+            .with_context(|| format!("writing {}", self.path.display()))?;
         Ok(Session {
             token: token.to_owned(),
             user_id,
@@ -155,6 +158,37 @@ mod tests {
         assert_eq!(store.load().unwrap().unwrap().token, token);
         store.clear().unwrap();
         assert!(store.load().unwrap().is_none());
+    }
+
+    #[test]
+    fn concurrent_saves_never_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().join("session.json"));
+        let short = jwt("u1");
+        let long = jwt(&"u".repeat(400));
+        std::thread::scope(|sc| {
+            for i in 0..8 {
+                let (store, t) = (&store, if i % 2 == 0 { &short } else { &long });
+                sc.spawn(move || {
+                    for _ in 0..50 {
+                        store.save(t).unwrap();
+                    }
+                });
+            }
+        });
+        let loaded = store.load().unwrap().unwrap();
+        assert!(loaded.token == short || loaded.token == long);
+    }
+
+    #[test]
+    fn ensure_private_dir_tightens_existing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&state).unwrap();
+        let mode = std::fs::metadata(&state).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]

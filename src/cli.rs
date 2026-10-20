@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use url::Url;
 
 use crate::api::client::DEFAULT_BASE;
-use crate::api::{Activity, ApiClient, EffectLevel, MentalState};
+use crate::api::{Activity, ApiClient, ApiError, EffectLevel, MentalState};
 use crate::session::{Session, SessionStore};
 
 /// Listen to Brain.fm from the terminal.
@@ -95,6 +95,18 @@ pub fn resolve_activity<'a>(acts: &'a [Activity], q: &str) -> Option<&'a Activit
         .find(|a| a.id.eq_ignore_ascii_case(q) || a.display_value.eq_ignore_ascii_case(q))
 }
 
+/// User-facing text for a command error; a 401 means different things
+/// during `login` and everywhere else.
+pub fn describe_error(e: &anyhow::Error, during_login: bool) -> String {
+    match e.downcast_ref::<ApiError>() {
+        Some(ApiError::Unauthorized) if during_login => {
+            "Wrong email or password (or an invalid token)".to_owned()
+        }
+        Some(ApiError::Unauthorized) => "Session expired — run `brainfm login`".to_owned(),
+        _ => format!("error: {e:#}"),
+    }
+}
+
 fn base_url() -> Url {
     Url::parse(DEFAULT_BASE).expect("static base url")
 }
@@ -131,6 +143,11 @@ async fn login(store: &SessionStore, paste_token: bool) -> anyhow::Result<()> {
         if t.is_empty() {
             bail!("no token given");
         }
+        // Validate before saving so a bad paste never replaces a good session.
+        ApiClient::new(base_url())
+            .with_token(t.clone())
+            .me()
+            .await?;
         t
     } else {
         let email = prompt("Email: ")?;

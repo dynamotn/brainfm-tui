@@ -11,3 +11,17 @@ fn help_lists_subcommands() {
         assert!(stdout.contains(sub), "missing `{sub}` in:\n{stdout}");
     }
 }
+
+#[test]
+fn wrong_password_is_not_reported_as_expired_session() {
+    let msg = brainfm::cli::describe_error(
+        &anyhow::Error::new(brainfm::api::ApiError::Unauthorized),
+        true,
+    );
+    assert!(msg.contains("Wrong email or password"), "{msg}");
+    let msg = brainfm::cli::describe_error(
+        &anyhow::Error::new(brainfm::api::ApiError::Unauthorized),
+        false,
+    );
+    assert!(msg.contains("brainfm login"), "{msg}");
+}

@@ -10,7 +10,6 @@ pub(crate) mod tests;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -187,7 +186,7 @@ async fn library(c: &ApiClient, uid: &str) -> Action {
 
 fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
     let dir = state_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    crate::session::ensure_private_dir(&dir)?;
     let (writer, guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::never(&dir, "brainfm.log"));
     let _ = tracing_subscriber::fmt()

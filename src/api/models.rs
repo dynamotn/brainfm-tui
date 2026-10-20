@@ -2,9 +2,18 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const AUDIO_BASE: &str = "https://audio.brain.fm/";
+
+/// Treats an explicit `null` like a missing field.
+fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Option::unwrap_or_default)
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,7 +75,7 @@ pub struct Track {
     pub name: String,
     #[serde(default)]
     pub image_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub tags: Vec<Tag>,
 }
 
@@ -95,7 +104,7 @@ pub struct TrackVariation {
     pub tokened_url: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub length_in_seconds: f64,
     #[serde(default)]
     pub neural_effect_level: Option<f64>,
@@ -197,6 +206,17 @@ mod tests {
         );
         assert_eq!(s.track_variation.length(), Duration::from_secs_f64(478.5));
         assert_eq!(s.track_variation.effect(), None);
+    }
+
+    #[test]
+    fn tolerates_explicit_nulls() {
+        let s: Serving = serde_json::from_value(serde_json::json!({
+            "track": {"id": "t1", "name": "n", "tags": null, "imageUrl": null},
+            "trackVariation": {"id": "v1", "url": "a.mp3", "lengthInSeconds": null}
+        }))
+        .unwrap();
+        assert!(s.track.tags.is_empty());
+        assert_eq!(s.track_variation.length(), Duration::ZERO);
     }
 
     #[test]
