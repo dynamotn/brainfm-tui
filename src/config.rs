@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context;
 use directories::ProjectDirs;
@@ -105,6 +106,41 @@ impl Config {
     }
 }
 
+/// How long settings must stay unchanged before they are written, so a
+/// dragged volume slider does not rewrite the file dozens of times.
+pub(crate) const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// Writes the latest `Some(config)` sent to the returned channel once
+/// changes have paused for `debounce`. Writing happens off the async runtime.
+pub(crate) fn spawn_writer(
+    path: PathBuf,
+    debounce: Duration,
+) -> tokio::sync::watch::Sender<Option<Config>> {
+    let (tx, mut rx) = tokio::sync::watch::channel(None::<Config>);
+    tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            // Keep waiting while changes keep coming.
+            loop {
+                tokio::select! {
+                    changed = rx.changed() => if changed.is_err() { break },
+                    () = tokio::time::sleep(debounce) => break,
+                }
+            }
+            let Some(config) = rx.borrow_and_update().clone() else {
+                continue;
+            };
+            let path = path.clone();
+            let saved = tokio::task::spawn_blocking(move || config.save(&path)).await;
+            match saved {
+                Ok(Err(e)) => tracing::warn!("saving config: {e:#}"),
+                Err(e) => tracing::warn!("saving config: {e}"),
+                Ok(Ok(())) => {}
+            }
+        }
+    });
+    tx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +194,22 @@ mod tests {
         });
         let loaded = Config::load(&path).unwrap();
         assert!(loaded == small || loaded == big);
+    }
+
+    #[tokio::test]
+    async fn bursts_of_changes_are_written_once_with_the_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let writer = spawn_writer(path.clone(), Duration::from_millis(80));
+        for v in 0..=50u8 {
+            writer.send_replace(Some(Config {
+                volume: v,
+                ..Config::default()
+            }));
+        }
+        assert!(!path.exists(), "nothing written during the burst");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(Config::load(&path).unwrap().volume, 50);
     }
 
     #[test]

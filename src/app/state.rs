@@ -130,6 +130,8 @@ pub struct AppState {
     pub toast: Option<Toast>,
     pub user_id: Option<String>,
     pub errors_in_a_row: u32,
+    /// Counts `Started` events, so a repeated track is still a new play.
+    pub started: u64,
     /// Playback was asked for before the state's activities were known;
     /// start once they arrive.
     pub restart_when_ready: bool,
@@ -173,6 +175,7 @@ impl AppState {
             toast: None,
             user_id,
             errors_in_a_row: 0,
+            started: 0,
             restart_when_ready: false,
             session_gen: 0,
             resume_to: Playback::Idle,

@@ -55,7 +55,7 @@ struct Runtime {
     store: SessionStore,
     player: PlayerHandle,
     tx: UnboundedSender<Action>,
-    config_path: PathBuf,
+    config_writer: tokio::sync::watch::Sender<Option<Config>>,
 }
 
 impl Runtime {
@@ -169,14 +169,9 @@ impl Runtime {
                     }
                 });
             }
+            // Written by a debounced background task (see `spawn_writer`).
             Effect::SaveConfig => {
-                if let Err(e) = s.config.save(&self.config_path) {
-                    tracing::warn!("saving config: {e:#}");
-                    let _ = self.tx.send(Action::Api(ApiReply::Failed {
-                        what: "config",
-                        error: ApiErrorKind::Other(format!("{e:#}")),
-                    }));
-                }
+                self.config_writer.send_replace(Some(s.config.clone()));
             }
         }
     }
@@ -298,6 +293,28 @@ fn setup() -> anyhow::Result<Setup> {
     })
 }
 
+/// Pushes what changed to the desktop's media controls.
+async fn mirror_to_media(
+    m: &Media,
+    mirror: &mut Mirror,
+    shown_position: &mut Duration,
+    state: &AppState,
+) {
+    mirror
+        .sync(
+            m,
+            state.now.as_ref().map(|n| (n, state.started)),
+            state.playback,
+            state.config.volume,
+        )
+        .await;
+    // Only real reports from the engine; MPRIS interpolates between them.
+    if state.position != *shown_position {
+        *shown_position = state.position;
+        m.set_position(state.position).await;
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let _log = init_logging()?;
 
@@ -327,7 +344,10 @@ pub async fn run() -> anyhow::Result<()> {
         store,
         player,
         tx: tx.clone(),
-        config_path,
+        config_writer: crate::config::spawn_writer(
+            config_path.clone(),
+            crate::config::SAVE_DEBOUNCE,
+        ),
     };
     let (state_tx, state_rx) = tokio::sync::watch::channel(serde_json::to_string(&state)?);
     #[cfg(unix)]
@@ -388,14 +408,7 @@ pub async fn run() -> anyhow::Result<()> {
             });
 
             if let Some(m) = &media {
-                mirror
-                    .sync(m, state.now.as_ref(), state.playback, state.config.volume)
-                    .await;
-                // Only real reports from the engine; MPRIS interpolates between them.
-                if state.position != shown_position {
-                    shown_position = state.position;
-                    m.set_position(state.position).await;
-                }
+                mirror_to_media(m, &mut mirror, &mut shown_position, &state).await;
             }
             if state.quit {
                 break;
@@ -405,6 +418,12 @@ pub async fn run() -> anyhow::Result<()> {
     }
     .await;
 
+    // A change made just before quitting may still sit in the debounce.
+    if state.config_writable
+        && let Err(e) = state.config.save(&config_path)
+    {
+        tracing::warn!("saving config: {e:#}");
+    }
     tokio::time::sleep(QUIT_GRACE).await;
     ratatui::restore();
     result

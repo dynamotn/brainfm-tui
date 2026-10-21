@@ -139,10 +139,46 @@ fn audio_threads() -> usize {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs an audio device"]
 async fn dropping_the_handle_stops_the_engine() {
-    let before = audio_threads();
+    // Threads created inside the engine (e.g. by the PulseAudio backend)
+    // inherit its name, so compare totals rather than expecting exactly one.
+    async fn settle() -> usize {
+        // Engines dropped by earlier tests may still be winding down.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while audio_threads() > 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        audio_threads()
+    }
+    assert_eq!(settle().await, 0, "no audio threads before the test");
     let (p, events) = player::spawn_insecure(tokio::runtime::Handle::current()).unwrap();
-    assert_eq!(audio_threads(), before + 1);
+    assert!(audio_threads() > 0);
     drop((p, events));
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(audio_threads(), before);
+    assert_eq!(settle().await, 0, "every audio thread exits");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs ffmpeg and an audio device"]
+async fn a_queued_track_with_nothing_to_follow_is_reported() {
+    let server = MockServer::start().await;
+    Mock::given(path("/b.mp3"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "audio/mpeg")
+                .set_body_bytes(sine_mp3(440, 2)),
+        )
+        .mount(&server)
+        .await;
+    let (p, mut events) = player::spawn_insecure(tokio::runtime::Handle::current()).unwrap();
+    p.send(PlayerCommand::Queue {
+        id: "b".into(),
+        url: format!("{}/b.mp3", server.uri()),
+        length: Duration::from_secs(2),
+    });
+    let ev = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .expect("an event, not silence");
+    assert!(
+        matches!(ev, Some(PlayerEvent::Error { ref id, .. }) if id == "b"),
+        "{ev:?}"
+    );
 }

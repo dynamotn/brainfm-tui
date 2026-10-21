@@ -1,21 +1,23 @@
 //! `brainfm play`: plays a mental state without the TUI.
 
+mod machine;
+
+use machine::{Cmd, FetchError, FetchKind, Machine};
+
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 
 use crate::api::{ApiClient, EffectLevel, Serving, SessionRequest, is_unauthorized};
-use crate::app::state::Playback;
 use crate::cli::{PlayArgs, client_from_store, resolve_activity, resolve_state};
 use crate::config::{Config, StatePrefs};
 use crate::media::{Media, MediaKey, Mirror};
 use crate::player::{self, PlayerCommand, PlayerEvent};
 use crate::session::SessionStore;
-use crate::timer::{Phase, Timer, TimerEvent, TimerMode, format_clock, parse_intervals};
+use crate::timer::{Phase, Timer, TimerMode, format_clock, parse_intervals};
 
 const TICK: Duration = Duration::from_millis(250);
-const MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
 /// Command-line filters win over the saved per-state preferences.
 pub(crate) fn build_request(
@@ -62,72 +64,6 @@ where
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no attempts made")))
 }
 
-/// Why headless playback is silent: the user paused it, or an interval break.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Pauses {
-    pub(crate) user: bool,
-    pub(crate) rest: bool,
-}
-
-/// What the engine should do after a media key or a phase change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeyEffect {
-    Nothing,
-    Play,
-    Pause,
-    Skip,
-    Volume(u8),
-}
-
-impl Pauses {
-    pub(crate) fn paused(self) -> bool {
-        self.user || self.rest
-    }
-
-    /// Enters or leaves an interval break without overriding a user pause.
-    pub(crate) fn set_rest(&mut self, rest: bool) -> KeyEffect {
-        let was = self.paused();
-        self.rest = rest;
-        match (was, self.paused()) {
-            (false, true) => KeyEffect::Pause,
-            (true, false) => KeyEffect::Play,
-            _ => KeyEffect::Nothing,
-        }
-    }
-
-    fn set_user(&mut self, user: bool) -> KeyEffect {
-        let was = self.paused();
-        self.user = user;
-        match (was, self.paused()) {
-            (false, true) => KeyEffect::Pause,
-            (true, false) => KeyEffect::Play,
-            _ => KeyEffect::Nothing,
-        }
-    }
-}
-
-pub(crate) fn on_media_key(p: &mut Pauses, key: MediaKey) -> KeyEffect {
-    match key {
-        MediaKey::Toggle => {
-            let user = !p.paused();
-            p.set_user(user)
-        }
-        MediaKey::Play => p.set_user(false),
-        MediaKey::Pause => p.set_user(true),
-        MediaKey::Next => KeyEffect::Skip,
-        MediaKey::SetVolume(v) => KeyEffect::Volume(v.min(100)),
-    }
-}
-
-/// A failed *queued* track only drops the prefetch; the current track plays on.
-pub(crate) fn error_needs_reload(id: &str, next: &mut Option<Serving>) -> bool {
-    if next.as_ref().is_some_and(|n| n.track.id == id) {
-        *next = None;
-        return false;
-    }
-    true
-}
-
 async fn next_serving(
     client: &ApiClient,
     uid: &str,
@@ -139,17 +75,6 @@ async fn next_serving(
         .into_iter()
         .next()
         .context("No tracks match these filters")
-}
-
-fn command_for(s: &Serving, queue: bool) -> anyhow::Result<PlayerCommand> {
-    let v = &s.track_variation;
-    let url = v.stream_url().context("track has no stream url")?;
-    let (id, length) = (s.track.id.clone(), v.length());
-    Ok(if queue {
-        PlayerCommand::Queue { id, url, length }
-    } else {
-        PlayerCommand::Load { id, url, length }
-    })
 }
 
 fn status_line(s: &Serving, pos: Duration, timer: &Timer, paused: bool) -> String {
@@ -209,182 +134,125 @@ fn timer_mode(args: &PlayArgs) -> anyhow::Result<TimerMode> {
     })
 }
 
-// One `select!` loop over player events, prefetches and ticks; its arms share
-// a dozen locals across awaits, which reads worse when split up.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     let _socket = claim_session().await?;
     let (client, session) = client_from_store(store)?;
     let config = Config::load(&Config::default_path()?)?;
     let req = resolve_request(&client, &config, &args).await?;
-    let mut timer = Timer::new(timer_mode(&args)?);
+    let mode = timer_mode(&args)?;
 
     let (player, mut events) = player::spawn(tokio::runtime::Handle::current())?;
-    player.send(PlayerCommand::SetVolume(f32::from(config.volume) / 100.0));
+    let first = retry(RETRIES, RETRY_DELAY, || {
+        next_serving(&client, &session.user_id, &req)
+    })
+    .await?;
+    let (mut m, cmds) = Machine::new(first, mode, config.volume);
 
-    let mut now = next_serving(&client, &session.user_id, &req).await?;
-    player.send(command_for(&now, false)?);
-    let mut next: Option<Serving> = None;
-    let mut pos = Duration::ZERO;
-    let mut pauses = Pauses::default();
-    let mut volume = config.volume.min(100);
     let (key_tx, mut keys) = tokio::sync::mpsc::unbounded_channel::<MediaKey>();
     let media = Media::start(key_tx).await;
     let mut mirror = Mirror::default();
-    let mut errors = 0u32;
-    let mut ticker = tokio::time::interval(TICK);
-    let mut out = std::io::stderr();
-    let fetch = || {
-        retry(RETRIES, RETRY_DELAY, || {
-            next_serving(&client, &session.user_id, &req)
-        })
+    let (fetch_tx, mut fetch_results) = tokio::sync::mpsc::unbounded_channel();
+    let fetcher = Fetcher {
+        client: client.clone(),
+        uid: session.user_id.clone(),
+        req: req.clone(),
+        tx: fetch_tx,
     };
-    // Prefetches run in the background so the loop keeps ticking and Ctrl-C
-    // stays responsive while the network is slow.
-    let (prefetch_tx, mut prefetched) = tokio::sync::mpsc::unbounded_channel();
-    let mut prefetching = false;
-    let mut last_tick = Instant::now();
-    let mut fade = Duration::ZERO;
 
-    let result: anyhow::Result<()> = async {
-        loop {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    fade = Duration::from_secs(1);
-                    break;
-                }
-                Some(ev) = events.recv() => match ev {
-                    PlayerEvent::Started { id } => {
-                        if next.as_ref().is_some_and(|n| n.track.id == id) {
-                            now = next.take().expect("checked");
-                        }
-                        pos = Duration::ZERO;
-                        errors = 0;
-                        timer.start();
-                    }
-                    PlayerEvent::Position { pos: p, .. } => {
-                        pos = p;
-                        if let Some(m) = &media {
-                            m.set_position(pos).await;
-                        }
-                    }
-                    PlayerEvent::NearEnd { .. } => {
-                        if next.is_none() && !prefetching {
-                            prefetching = true;
-                            let (c, uid, r, tx) =
-                                (client.clone(), session.user_id.clone(), req.clone(), prefetch_tx.clone());
-                            tokio::spawn(async move {
-                                let s = retry(RETRIES, RETRY_DELAY, || next_serving(&c, &uid, &r)).await;
-                                let _ = tx.send(s);
-                            });
-                        }
-                    }
-                    PlayerEvent::Ended { .. } => {
-                        if next.is_none() {
-                            let Some(s) = or_ctrl_c(fetch()).await? else {
-                                fade = Duration::ZERO;
-                                break;
-                            };
-                            now = s;
-                            player.send(command_for(&now, false)?);
-                        }
-                    }
-                    PlayerEvent::Error { id, message } => {
-                        if !error_needs_reload(&id, &mut next) {
-                            continue;
-                        }
-                        errors += 1;
-                        let message = printable(&message);
-                        if errors >= MAX_CONSECUTIVE_ERRORS {
-                            bail!("{message} (giving up after {errors} failed tracks)");
-                        }
-                        writeln!(out, "\r\x1b[2K! {message}, skipping")?;
-                        let Some(s) = or_ctrl_c(fetch()).await? else {
-                            fade = Duration::ZERO;
-                            break;
-                        };
-                        now = s;
-                        player.send(command_for(&now, false)?);
-                    }
-                },
-                Some(key) = keys.recv() => match on_media_key(&mut pauses, key) {
-                    KeyEffect::Nothing => {}
-                    KeyEffect::Play => {
-                        player.send(PlayerCommand::Play);
-                        timer.start();
-                    }
-                    KeyEffect::Pause => {
-                        player.send(PlayerCommand::Pause);
-                        timer.pause();
-                    }
-                    KeyEffect::Skip => {
-                        let Some(s) = or_ctrl_c(fetch()).await? else {
-                            fade = Duration::ZERO;
-                            break;
-                        };
-                        next = None;
-                        now = s;
-                        player.send(command_for(&now, false)?);
-                    }
-                    KeyEffect::Volume(v) => {
-                        volume = v;
-                        player.send(PlayerCommand::SetVolume(f32::from(v) / 100.0));
-                    }
-                },
-                Some(r) = prefetched.recv() => {
-                    prefetching = false;
-                    match r {
-                        Ok(s) => {
-                            player.send(command_for(&s, true)?);
-                            next = Some(s);
-                        }
-                        Err(e) if is_unauthorized(&e) => return Err(e),
-                        // Not fatal: another attempt is made when this track ends.
-                        Err(e) => tracing::warn!("prefetch failed: {e:#}"),
-                    }
-                }
-                _ = ticker.tick() => {
-                    let now_tick = Instant::now();
-                    let dt = now_tick - last_tick;
-                    last_tick = now_tick;
-                    match timer.tick(dt) {
-                        Some(TimerEvent::Finished) => {
-                            fade = Duration::from_secs(3);
-                            break;
-                        }
-                        Some(TimerEvent::PhaseChanged(phase)) => {
-                            player.send(PlayerCommand::Chime);
-                            match pauses.set_rest(phase == Phase::Rest) {
-                                KeyEffect::Pause => player.send(PlayerCommand::Pause),
-                                KeyEffect::Play => player.send(PlayerCommand::Play),
-                                _ => {}
-                            }
-                        }
-                        None => {}
-                    }
-                    if let Some(m) = &media {
-                        let status = if pauses.paused() { Playback::Paused } else { Playback::Playing };
-                        mirror.sync(m, Some(&now), status, volume).await;
-                    }
-                    write!(out, "\r\x1b[2K{}", status_line(&now, pos, &timer, pauses.paused()))?;
-                    out.flush()?;
-                }
+    let mut ticker = tokio::time::interval(TICK);
+    let mut last_tick = Instant::now();
+    let mut out = std::io::stderr();
+    let mut pending = cmds;
+    let ending: anyhow::Result<Duration> = loop {
+        // Carry out what the machine asked for.
+        let mut stop = None;
+        for cmd in pending.drain(..) {
+            match cmd {
+                Cmd::Player(c) => player.send(c),
+                Cmd::Fetch { kind, epoch } => fetcher.spawn(kind, epoch),
+                Cmd::Notice(text) => writeln!(out, "\r\x1b[2K{text}")?,
+                Cmd::Stop { fade } => stop = Some(Ok(fade)),
+                Cmd::Fail(reason) => stop = Some(Err(anyhow::anyhow!(reason))),
             }
         }
-        Ok(())
-    }
-    .await;
-    // Clear the status line so any error prints on a line of its own.
+        if let Some(end) = stop {
+            break end;
+        }
+        pending = tokio::select! {
+            _ = tokio::signal::ctrl_c() => vec![Cmd::Stop { fade: machine::QUIT_FADE }],
+            Some(ev) = events.recv() => {
+                let pos_report = matches!(ev, PlayerEvent::Position { .. });
+                let cmds = m.on_player(ev);
+                if pos_report && let Some(media) = &media {
+                    media.set_position(m.pos).await;
+                }
+                cmds
+            }
+            Some((kind, epoch, result)) = fetch_results.recv() => m.on_fetched(kind, epoch, result),
+            Some(key) = keys.recv() => m.on_key(key),
+            _ = ticker.tick() => {
+                let now_tick = Instant::now();
+                let cmds = m.on_tick(now_tick - last_tick);
+                last_tick = now_tick;
+                if let Some(media) = &media {
+                    mirror.sync(media, Some((&m.now, m.serial)), m.status(), m.volume).await;
+                }
+                write!(out, "\r\x1b[2K{}", status_line(&m.now, m.pos, &m.timer, m.pauses.paused()))?;
+                out.flush()?;
+                cmds
+            }
+        };
+    };
+    // Clear the status line so any message prints on a line of its own.
     write!(out, "\r\x1b[2K")?;
+    let fade = match ending {
+        Ok(fade) => fade,
+        Err(e) => {
+            player.send(PlayerCommand::Stop {
+                fade: Duration::ZERO,
+            });
+            return Err(e);
+        }
+    };
     player.send(PlayerCommand::Stop { fade });
-    result?;
     // Let the engine finish its fade before the process exits.
     tokio::time::sleep(fade + Duration::from_millis(200)).await;
-    if timer.display().is_zero() && !matches!(timer.mode(), TimerMode::Infinite) {
+    if m.timer.display().is_zero() && !matches!(m.timer.mode(), TimerMode::Infinite) {
         eprintln!("Session complete");
     }
     Ok(())
+}
+
+/// Runs track fetches in the background and reports them back tagged.
+struct Fetcher {
+    client: ApiClient,
+    uid: String,
+    req: SessionRequest,
+    tx: tokio::sync::mpsc::UnboundedSender<(FetchKind, u64, Result<Serving, FetchError>)>,
+}
+
+impl Fetcher {
+    fn spawn(&self, kind: FetchKind, epoch: u64) {
+        let (c, uid, req, tx) = (
+            self.client.clone(),
+            self.uid.clone(),
+            self.req.clone(),
+            self.tx.clone(),
+        );
+        tokio::spawn(async move {
+            let result = retry(RETRIES, RETRY_DELAY, || next_serving(&c, &uid, &req))
+                .await
+                .map_err(|e| {
+                    if is_unauthorized(&e) {
+                        FetchError::Unauthorized
+                    } else {
+                        FetchError::Other(format!("{e:#}"))
+                    }
+                });
+            let _ = tx.send((kind, epoch, result));
+        });
+    }
 }
 
 /// Holds the shared-session socket so a TUI opened meanwhile explains why it
@@ -413,14 +281,6 @@ async fn claim_session() -> anyhow::Result<Option<crate::share::SocketGuard>> {
     }
 }
 
-/// Awaits `fut`, or returns `None` if Ctrl-C arrives first.
-async fn or_ctrl_c<T>(fut: impl Future<Output = anyhow::Result<T>>) -> anyhow::Result<Option<T>> {
-    tokio::select! {
-        r = fut => r.map(Some),
-        _ = tokio::signal::ctrl_c() => Ok(None),
-    }
-}
-
 /// Drops control characters so API text cannot drive the terminal.
 pub(crate) fn printable(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
@@ -428,16 +288,9 @@ pub(crate) fn printable(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::machine::{KeyEffect, Pauses, on_media_key};
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
-
-    fn serving(id: &str) -> Serving {
-        serde_json::from_value(serde_json::json!({
-            "track": {"id": id, "name": id, "tags": []},
-            "trackVariation": {"id": "v", "url": "x.mp3", "lengthInSeconds": 10}
-        }))
-        .unwrap()
-    }
 
     #[test]
     fn toggle_pauses_then_resumes() {
@@ -490,14 +343,6 @@ mod tests {
             on_media_key(&mut p, MediaKey::SetVolume(30)),
             KeyEffect::Volume(30)
         );
-    }
-
-    #[test]
-    fn queued_error_only_clears_next() {
-        let mut next = Some(serving("b"));
-        assert!(!error_needs_reload("b", &mut next));
-        assert!(next.is_none());
-        assert!(error_needs_reload("a", &mut next));
     }
 
     #[tokio::test]

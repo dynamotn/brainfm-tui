@@ -177,4 +177,12 @@ async fn serves_mpris_on_the_session_bus() {
         .await
         .unwrap();
     assert_eq!(keys.recv().await, Some(MediaKey::SetVolume(25)));
+    let vol: f64 = get(&client, &dest, PLAYER_IFACE, "Volume")
+        .await
+        .try_into()
+        .unwrap();
+    assert!(
+        (vol - 0.25).abs() < 1e-9,
+        "setter must not report the old volume: {vol}"
+    );
 }

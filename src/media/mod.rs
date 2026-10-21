@@ -38,7 +38,9 @@ use crate::app::state::Playback;
 /// track keeps playing until the new one starts.
 #[derive(Debug, Default)]
 pub(crate) struct Mirror {
-    track: Option<String>,
+    /// Track id and how many times playback started, so a repeat of the
+    /// same track still counts as a change.
+    track: Option<(String, u64)>,
     playback: Option<Playback>,
     volume: Option<u8>,
 }
@@ -51,10 +53,16 @@ pub(crate) struct Changes {
 }
 
 impl Mirror {
-    pub(crate) fn diff(&mut self, track: Option<&str>, playback: Playback, volume: u8) -> Changes {
+    pub(crate) fn diff(
+        &mut self,
+        track: Option<(&str, u64)>,
+        playback: Playback,
+        volume: u8,
+    ) -> Changes {
         let mut c = Changes::default();
-        if self.track.as_deref() != track {
-            self.track = track.map(str::to_owned);
+        let current = self.track.as_ref().map(|(id, n)| (id.as_str(), *n));
+        if current != track {
+            self.track = track.map(|(id, n)| (id.to_owned(), n));
             c.track = true;
         }
         if playback != Playback::Loading && self.playback != Some(playback) {
@@ -72,13 +80,13 @@ impl Mirror {
     pub(crate) async fn sync(
         &mut self,
         media: &Media,
-        now: Option<&Serving>,
+        now: Option<(&Serving, u64)>,
         playback: Playback,
         volume: u8,
     ) {
-        let c = self.diff(now.map(|n| n.track.id.as_str()), playback, volume);
+        let c = self.diff(now.map(|(n, k)| (n.track.id.as_str(), k)), playback, volume);
         if c.track {
-            media.set_track(now).await;
+            media.set_track(now.map(|(n, _)| n)).await;
         }
         if c.playback {
             media.set_playback(playback).await;
@@ -96,7 +104,7 @@ mod mirror_tests {
     #[test]
     fn first_sync_pushes_everything() {
         let mut m = Mirror::default();
-        let c = m.diff(Some("a"), Playback::Playing, 70);
+        let c = m.diff(Some(("a", 1)), Playback::Playing, 70);
         assert_eq!(
             c,
             Changes {
@@ -110,16 +118,29 @@ mod mirror_tests {
     #[test]
     fn unchanged_state_pushes_nothing() {
         let mut m = Mirror::default();
-        m.diff(Some("a"), Playback::Playing, 70);
-        assert_eq!(m.diff(Some("a"), Playback::Playing, 70), Changes::default());
+        m.diff(Some(("a", 1)), Playback::Playing, 70);
+        assert_eq!(
+            m.diff(Some(("a", 1)), Playback::Playing, 70),
+            Changes::default()
+        );
+    }
+
+    #[test]
+    fn the_same_track_played_again_is_a_change() {
+        let mut m = Mirror::default();
+        m.diff(Some(("a", 1)), Playback::Playing, 70);
+        assert!(m.diff(Some(("a", 2)), Playback::Playing, 70).track);
     }
 
     #[test]
     fn loading_is_never_pushed() {
         let mut m = Mirror::default();
-        m.diff(Some("a"), Playback::Playing, 70);
-        assert_eq!(m.diff(Some("a"), Playback::Loading, 70), Changes::default());
-        let c = m.diff(Some("b"), Playback::Playing, 70);
+        m.diff(Some(("a", 1)), Playback::Playing, 70);
+        assert_eq!(
+            m.diff(Some(("a", 1)), Playback::Loading, 70),
+            Changes::default()
+        );
+        let c = m.diff(Some(("b", 2)), Playback::Playing, 70);
         assert_eq!(
             c,
             Changes {

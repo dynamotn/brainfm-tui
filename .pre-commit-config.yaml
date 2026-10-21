@@ -3,19 +3,19 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --check
+        entry: scripts/pinned-cargo.sh fmt --check
         language: system
         pass_filenames: false
         types: [rust]
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets -- -D warnings
+        entry: scripts/pinned-cargo.sh clippy --all-targets -- -D warnings
         language: system
         pass_filenames: false
         types: [rust]
       - id: cargo-test
         name: cargo test
-        entry: cargo test
+        entry: scripts/pinned-cargo.sh test
         language: system
         pass_filenames: false
         types: [rust]

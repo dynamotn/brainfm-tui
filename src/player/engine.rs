@@ -227,6 +227,11 @@ impl Engine {
     ) {
         if !replace && self.queue.is_empty() {
             // Nothing is playing for it to follow (stopped or ended meanwhile).
+            // Report it so callers stop waiting for this track to start.
+            self.emit(PlayerEvent::Error {
+                id,
+                message: "queued track arrived after playback stopped".into(),
+            });
             return;
         }
         let src = match result {

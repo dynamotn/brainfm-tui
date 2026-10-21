@@ -86,13 +86,22 @@ impl NowPlaying {
             cover_url: s.track.image_url.as_deref(),
             duration: Some(s.track_variation.length()),
         };
-        let mut c = self
-            .controls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(e) = c.set_metadata(meta) {
-            tracing::debug!("set_metadata failed: {e:?}");
+        {
+            let mut c = self
+                .controls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Err(e) = c.set_metadata(meta) {
+                tracing::debug!("set_metadata failed: {e:?}");
+            }
         }
+        // New metadata replaces the whole Now Playing entry, elapsed time
+        // included; start the new track from zero and re-send the state.
+        self.status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1 = Duration::ZERO;
+        self.push();
     }
 
     pub(crate) async fn set_playback(&self, status: Playback) {

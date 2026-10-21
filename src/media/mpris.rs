@@ -244,6 +244,9 @@ impl Player {
         // Clamped to 0..=100 first, so the cast cannot truncate.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let percent = (volume.clamp(0.0, 1.0) * 100.0).round() as u8;
+        // zbus signals the change right after this returns, by reading the
+        // getter; record the new value first so it does not report the old.
+        lock(&self.shared).volume = percent;
         self.send(MediaKey::SetVolume(percent));
     }
     /// Per the spec, position changes are not signalled; clients poll.

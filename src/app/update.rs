@@ -552,6 +552,7 @@ fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
             s.playback = Playback::Playing;
             s.position = Duration::ZERO;
             s.errors_in_a_row = 0;
+            s.started += 1;
             s.timer.start();
         }
         PlayerEvent::Position { id, pos } => {
