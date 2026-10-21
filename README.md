@@ -32,6 +32,9 @@ written in Rust. No browser, no Electron, no external player.
   widget, and media keys and `playerctl` control it, both in the TUI and in
   `brainfm play`. Audio goes through PulseAudio or PipeWire, so it gets its
   own volume slider in your mixer.
+- **One session, any number of windows.** Open brainfm in a second terminal
+  and it joins the session that is playing instead of starting another
+  stream.
 - **Scriptable.** `brainfm play focus --intervals 25m/5m` runs a headless
   session from a shell, a status bar or a cron job.
 - **Light and private.** One small binary. Audio streams into memory and is
@@ -93,123 +96,24 @@ cargo install --git https://github.com/dynamotn/brainfm-tui
 cargo install --git https://github.com/dynamotn/brainfm-tui --features pipewire
 ```
 
-## Log in
+## Using it
 
 ```sh
-brainfm login            # email + password
-brainfm login --token    # paste a token instead
-brainfm whoami
-brainfm logout
+brainfm                                   # the player; press ? for keys
+brainfm play focus --intervals 25m/5m     # no TUI: status line, media keys
+brainfm list activities --state relax     # names for --activity
+playerctl -p brainfm next                 # control it from anywhere
 ```
 
-If you sign in to Brain.fm with Google or Apple, use `--token`:
+## Documentation
 
-1. Open my.brain.fm and your browser's DevTools.
-2. Copy the `Authorization: Bearer …` value from any request to
-   `api.brain.fm`.
-3. Paste it at the prompt.
-
-The token is stored with mode `0600`. Brain.fm refreshes it on every request,
-and brainfm keeps the stored copy up to date.
-
-## Using the player
-
-Run `brainfm` with no arguments. Press `?` at any time for the key list.
-
-<details>
-<summary><b>Keys</b></summary>
-
-| Key | Action |
-|---|---|
-| `space` | play / pause |
-| `n` | skip track |
-| `f` | favorite / unfavorite |
-| `d` | dislike (never play again) and skip |
-| `tab` / `shift-tab` / `1`–`4` | switch mental state |
-| `a` | pick activity |
-| `g` | pick genres (none selected means all) |
-| `e` | pick neural effect level |
-| `t` | timer: Infinite, 30 min / 1 hr / 2 hrs, custom, Intervals |
-| `+` / `-` | volume |
-| `p` | show / hide the side panel |
-| `[` / `]` | switch panel tab |
-| `j` / `k`, `enter` | move and select in the panel and pickers |
-| `q` / `ctrl-c` | quit |
-
-</details>
-
-Without truecolor support the TUI falls back to 256 colours. Set
-`BRAINFM_ASCII=1` if your font lacks the symbols.
-
-## Audio and media keys
-
-brainfm picks the first sound system that answers: native PipeWire (only in
-`--features pipewire` builds), then PulseAudio, which also covers PipeWire
-through `pipewire-pulse`, then plain ALSA. To force one, set
-`BRAINFM_AUDIO_HOST` to `pipewire`, `pulse` or `alsa`. The log says which one
-was used. In the mixer the stream shows up as `cpal-pulseaudio-<pid>`; the
-audio library picks that name.
-
-On Linux brainfm registers as an MPRIS player, `org.mpris.MediaPlayer2.brainfm`.
-A second copy running at the same time registers as
-`brainfm.instance<pid>`, so both can be controlled.
-
-| Works | Not supported |
-|---|---|
-| play, pause, play-pause, stop, next | previous, seek, set position |
-| volume (read and set) | open URI, raise, quit |
-| title, genre, length, cover art, a unique track id per song | loop and shuffle |
-| playback position | |
-
-```sh
-playerctl -p brainfm play-pause
-playerctl -p brainfm metadata --format '{{ title }} · {{ album }}'
-```
-
-On macOS brainfm uses the system Now Playing controls instead (built in CI,
-not yet tested on a real Mac).
-
-## Scripting
-
-```sh
-brainfm list states
-brainfm list activities --state focus
-brainfm list genres --state relax
-
-brainfm play focus
-brainfm play focus --activity "Deep Work" --effect high --intervals 25m/5m
-brainfm play sleep --genre Piano --timer 1h30m
-```
-
-`play` shows a one-line status, chimes between intervals, and fades out when
-the timer ends or when you press Ctrl-C.
-
-<details>
-<summary><b>Where brainfm keeps its files</b></summary>
-
-| What | Where (Linux) |
-|---|---|
-| Session token | `~/.local/state/brainfm/session.json` |
-| Preferences | `~/.config/brainfm/config.toml` |
-| Log | `~/.local/state/brainfm/brainfm.log` |
-
-</details>
-
-## Development
-
-```sh
-cargo test                                    # unit, API (wiremock) and UI snapshot tests
-cargo test --test player_smoke -- --ignored   # real audio; needs ffmpeg and a sound card
-prek run --all-files                          # fmt, clippy, tests
-cargo deny check                              # advisories, licenses, sources
-scripts/screenshots.sh                        # regenerate docs/screenshots
-```
-
-The compiler is pinned in `rust-toolchain.toml`, so local checks match CI.
-
-To release, bump `version` in `Cargo.toml`, commit, and push a matching tag
-(`git tag v0.2.0 && git push origin v0.2.0`). The Release workflow runs CI,
-checks the tag against `Cargo.toml`, and publishes binaries with checksums.
+- [User guide](docs/user-guide.md): logging in (including Google and Apple
+  accounts), every key, filters, timers, several windows, media keys, sound
+  output, `brainfm play`, troubleshooting.
+- [Configuration reference](docs/configuration.md): files, `config.toml`,
+  environment variables, build features.
+- [Architecture](docs/architecture.md) and [development](docs/development.md):
+  how it works, how to test and release it.
 
 ## Disclaimer
 
