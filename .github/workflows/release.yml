@@ -48,9 +48,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install audio and D-Bus headers
+      - name: Install ALSA headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       # Installs the compiler pinned in rust-toolchain.toml (host target only;
       # every matrix entry builds natively on its own runner).
       - run: rustup toolchain install
