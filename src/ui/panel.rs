@@ -58,6 +58,9 @@ fn row<'a>(text: &str, extra: Option<&str>, selected: bool, t: &Theme, width: u1
     } else {
         Style::new().fg(t.text)
     };
+    // Leave room for the right-aligned extra plus a gap of two spaces.
+    let reserved = extra.map_or(0, |e| e.chars().count() + 3);
+    let text = super::shorten(text, usize::from(width).saturating_sub(3 + reserved));
     let mut spans = vec![Span::styled(format!(" {marker}{text}"), base)];
     if let Some(extra) = extra {
         let used = text.chars().count() + 3;

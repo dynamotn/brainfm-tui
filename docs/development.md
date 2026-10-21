@@ -48,9 +48,13 @@ The audio tests honour `BRAINFM_AUDIO_HOST`; run them with `pulse` and with
 
 ## Screenshots
 
-`scripts/screenshots.sh` renders the README screenshots from sample data with
-the real drawing code (`src/ui/screenshots.rs`), then converts them to PNG
-with `resvg`. Track names in the samples are made up.
+`scripts/screenshots.sh --live` captures the README screenshots from the
+brainfm running on your machine. Start it and play something first. It
+attaches as a view, draws a copy of the real state with the app's own drawing
+code (`src/ui/screenshots.rs`), and converts the result to PNG with `resvg`.
+Popups are opened only on that copy, never in your session, and the Profile
+tab (which shows the account id) is never captured. Without `--live` the
+script renders made-up sample data instead.
 
 ## Continuous integration
 

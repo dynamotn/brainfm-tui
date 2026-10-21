@@ -77,6 +77,35 @@ pub(crate) fn draw(f: &mut Frame<'_>, s: &AppState, t: &Theme) {
     }
 }
 
+/// At most `max` characters, ending in `…` when something was cut.
+pub(crate) fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
+/// `a, b, c` if it fits in `max` characters, else as many items as fit
+/// followed by `+N` for the rest, never cutting an item in half.
+pub(crate) fn fit_list(items: &[String], max: usize) -> String {
+    let all = items.join(", ");
+    if all.chars().count() <= max {
+        return all;
+    }
+    for shown in (1..items.len()).rev() {
+        let candidate = format!("{} +{}", items[..shown].join(", "), items.len() - shown);
+        if candidate.chars().count() <= max {
+            return candidate;
+        }
+    }
+    shorten(&format!("{} genres", items.len()), max)
+}
+
 /// Terminal sizes fit in `u16`; anything longer is clipped to the screen anyway.
 fn to_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)

@@ -144,7 +144,7 @@ The side panel mirrors the desktop app's.
 - **Explore** lists the activities of the current state; `enter` picks one.
 - **Profile** shows the account and where the configuration lives.
 
-![Relax session with the Explore tab](screenshots/relax.png)
+![The Explore tab](screenshots/explore.png)
 
 The panel needs a terminal at least 100 columns wide; below that the player
 uses the whole width. On wider terminals `p` hides or shows it.

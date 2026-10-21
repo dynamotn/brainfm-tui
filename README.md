@@ -46,11 +46,11 @@ written in Rust. No browser, no Electron, no external player.
 <table>
   <tr>
     <td width="50%"><img src="docs/screenshots/filters.png" alt="Genre picker overlay over the player"></td>
-    <td width="50%"><img src="docs/screenshots/relax.png" alt="Relax session, paused, with the Explore tab listing activities"></td>
+    <td width="50%"><img src="docs/screenshots/explore.png" alt="The Explore tab listing the activities of the current state"></td>
   </tr>
   <tr>
     <td align="center"><sub>Pick genres, activity and neural effect from popovers</sub></td>
-    <td align="center"><sub>Relax session with the Explore tab</sub></td>
+    <td align="center"><sub>The Explore tab: activities for the current state</sub></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><img src="docs/screenshots/compact.png" alt="The player on an 80 by 24 terminal, with the side panel hidden" width="60%"></td>
@@ -60,8 +60,8 @@ written in Rust. No browser, no Electron, no external player.
   </tr>
 </table>
 
-<sub>The screenshots are rendered from sample data by the app's real UI code
-(`scripts/screenshots.sh`). Track names are made up.</sub>
+<sub>Captured from a real listening session with
+`scripts/screenshots.sh --live`.</sub>
 
 ## Quick start
 

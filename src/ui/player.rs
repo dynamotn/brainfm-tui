@@ -95,11 +95,6 @@ fn draw_filters(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
     let activity = s
         .current_activity_name()
         .unwrap_or_else(|| "Activity".into());
-    let genres = if prefs.genres.is_empty() {
-        "All genres".to_owned()
-    } else {
-        prefs.genres.join(", ")
-    };
     let mut spans = vec![
         Span::styled(
             format!("{activity} {}", t.glyphs.dropdown),
@@ -108,6 +103,12 @@ fn draw_filters(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
         Span::styled("    Neural effect ", t.dim()),
     ];
     spans.extend(effect_meter(&prefs.effects, t));
+    let room = usize::from(area.width).saturating_sub(Line::from(spans.clone()).width() + 4);
+    let genres = if prefs.genres.is_empty() {
+        "All genres".to_owned()
+    } else {
+        super::fit_list(&prefs.genres, room)
+    };
     spans.push(Span::styled(format!("    {genres}"), t.dim()));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -217,7 +218,7 @@ fn draw_track(f: &mut Frame<'_>, name: Rect, meta: Rect, s: &AppState, t: &Theme
         parts.push(moods.join(", "));
     }
     f.render_widget(
-        Paragraph::new(parts.join(" · "))
+        Paragraph::new(super::shorten(&parts.join(" · "), usize::from(meta.width)))
             .alignment(Alignment::Center)
             .style(t.dim()),
         meta,

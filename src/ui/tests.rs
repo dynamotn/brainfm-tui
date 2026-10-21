@@ -223,3 +223,75 @@ fn the_wire_never_carries_the_password() {
         "same mask length"
     );
 }
+
+#[test]
+fn long_track_names_are_shortened_before_the_genre_column() {
+    let mut s = playing();
+    s.panel.recents = vec![serving("r9", "Missa Ecce Ancilla Domine Sanctus Agnus")];
+    let out = text(&render(&s, 140, 40));
+    let line = out
+        .lines()
+        .find(|l| l.contains("Missa"))
+        .expect("the long track is listed");
+    assert!(line.contains('…'), "{line}");
+    assert!(
+        line.contains(" Electronic"),
+        "genre keeps its column: {line}"
+    );
+}
+
+#[test]
+fn many_genres_collapse_into_a_count_instead_of_being_cut() {
+    let mut s = playing();
+    let id = s.current_state().unwrap().id.clone();
+    let genres: Vec<String> = [
+        "Beach",
+        "Classical",
+        "Forest",
+        "Lofi",
+        "Piano",
+        "Rain",
+        "Rainforest",
+        "Thunder",
+        "Underwater",
+    ]
+    .iter()
+    .map(|g| (*g).to_owned())
+    .collect();
+    s.config.states.entry(id).or_default().genres = genres;
+    let out = text(&render(&s, 100, 30));
+    let line = out.lines().find(|l| l.contains("Neural effect")).unwrap();
+    assert!(line.contains("Beach"), "{line}");
+    assert!(line.contains('+'), "the rest is summarized: {line}");
+    assert!(
+        !line.contains("Rainfor") || line.contains("Rainforest"),
+        "no word cut in half: {line}"
+    );
+}
+
+#[test]
+fn shorten_keeps_short_text_and_marks_long_text() {
+    assert_eq!(super::shorten("Lumen", 10), "Lumen");
+    assert_eq!(super::shorten("Missa Ecce Ancilla", 10), "Missa Ecc…");
+    assert_eq!(super::shorten("abc", 0), "");
+}
+
+#[test]
+fn long_track_details_end_with_an_ellipsis_on_narrow_terminals() {
+    let mut s = playing();
+    let long = serde_json::from_value::<Serving>(json!({
+        "track": {"id": "a", "name": "Zephyrline", "tags": [
+            {"type": "genre", "value": "Classical"},
+            {"type": "mood", "value": "Driving"}, {"type": "mood", "value": "Energizing"},
+            {"type": "mood", "value": "Inspiring"}, {"type": "mood", "value": "Optimistic"},
+            {"type": "mood", "value": "Upbeat"}, {"type": "mood", "value": "Uplifting"}
+        ]},
+        "trackVariation": {"id": "v", "tokenedUrl": "https://cdn/x.mp3",
+                           "lengthInSeconds": 1800, "neuralEffectLevel": 0.2}
+    }))
+    .unwrap();
+    s.now = Some(long);
+    let out = text(&render(&s, 80, 24));
+    let line = out.lines().find(|l| l.contains("Classical")).unwrap();
+    assert!(line.contains('…'), "{line}");
+}

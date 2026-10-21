@@ -309,7 +309,7 @@ fn screenshots() {
     });
     shoot("filters", "brainfm — pick genres", &genres, 132, 34);
 
-    shoot("relax", "brainfm — Relax", &relax(), 132, 34);
+    shoot("explore", "brainfm — Relax", &relax(), 132, 34);
 
     let compact = playing(
         0,
@@ -318,4 +318,43 @@ fn screenshots() {
         Duration::from_mins(9),
     );
     shoot("compact", "brainfm — 80×24", &compact, 80, 24);
+}
+
+/// Screenshots of a real session: start `brainfm`, play something, then run
+/// `scripts/screenshots.sh --live`. Only a local copy of the state is
+/// changed (popups, panel tab); the running session is left alone, and the
+/// Profile tab (which shows the account id) is never captured.
+#[tokio::test]
+#[ignore = "attaches to a running brainfm; run on demand"]
+async fn live_screenshots() {
+    use crate::share::{Attach, attach, socket_path};
+    let Attach::Session(client) = attach(&socket_path().expect("socket path"))
+        .await
+        .expect("socket")
+    else {
+        panic!("start brainfm and play something first");
+    };
+    let (first, _, _) = client.split();
+    let mut live = first.expect("a state from the running brainfm");
+    live.overlay = None;
+    live.toast = None;
+    live.panel.visible = true;
+    live.panel.tab = PanelTab::Library;
+    live.panel.selected = 0;
+    let state = live.current_state().map_or_else(
+        || "brainfm".to_owned(),
+        |s| format!("brainfm — {}", s.display_value),
+    );
+    shoot("player", &state, &live, 132, 34);
+
+    let mut filters = live.clone();
+    let chosen = filters.current_prefs().genres.into_iter().collect();
+    filters.overlay = Some(Overlay::Genres { sel: 0, chosen });
+    shoot("filters", "brainfm — pick genres", &filters, 132, 34);
+
+    let mut explore = live.clone();
+    explore.panel.tab = PanelTab::Explore;
+    shoot("explore", &format!("{state} · Explore"), &explore, 132, 34);
+
+    shoot("compact", "brainfm — 80×24", &live, 80, 24);
 }
