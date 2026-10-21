@@ -110,6 +110,21 @@ fn open_source(
     Decoder::new(reader).context("could not decode track")
 }
 
+/// The default output device of the chosen host (see [`super::choose_host`]).
+fn output_device() -> anyhow::Result<cpal::Device> {
+    use cpal::traits::HostTrait;
+    let requested = std::env::var(super::AUDIO_HOST_ENV).ok();
+    let ids = cpal::available_hosts();
+    let named: Vec<(cpal::HostId, &str)> = ids.iter().map(|id| (*id, id.name())).collect();
+    let host = match super::choose_host(requested.as_deref(), &named)? {
+        Some(id) => cpal::host_from_id(id).context("could not open the audio host")?,
+        None => cpal::default_host(),
+    };
+    tracing::info!("audio host: {}", host.id().name());
+    host.default_output_device()
+        .with_context(|| format!("no default output device on {}", host.id().name()))
+}
+
 impl Engine {
     fn open(
         rt: tokio::runtime::Handle,
@@ -117,8 +132,9 @@ impl Engine {
         events: UnboundedSender<PlayerEvent>,
         https_only: bool,
     ) -> anyhow::Result<Self> {
-        let mut sink = DeviceSinkBuilder::from_default_device()
-            .context("no audio output device")?
+        let device = output_device()?;
+        let mut sink = DeviceSinkBuilder::from_device(device)
+            .context("could not use the audio output device")?
             .with_error_callback(|e| tracing::warn!("audio stream error: {e}"))
             .open_sink_or_fallback()
             .context("could not open the audio output device")?;

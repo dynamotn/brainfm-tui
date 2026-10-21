@@ -15,13 +15,7 @@ const QUIT_FADE: Duration = Duration::from_millis(500);
 const VOLUME_STEP: u8 = 10;
 const LOADING_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaKey {
-    Play,
-    Pause,
-    Toggle,
-    Next,
-}
+pub use crate::media::MediaKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -119,6 +113,7 @@ pub fn update(s: &mut AppState, action: Action) -> Vec<Effect> {
             MediaKey::Play if s.playback != Playback::Playing => toggle_play(s, &mut fx),
             MediaKey::Pause if s.playback == Playback::Playing => toggle_play(s, &mut fx),
             MediaKey::Next => skip(s, &mut fx),
+            MediaKey::SetVolume(v) => set_volume(s, v, &mut fx),
             _ => {}
         },
     }

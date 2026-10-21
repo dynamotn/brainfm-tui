@@ -20,11 +20,11 @@ use url::Url;
 use crate::api::client::DEFAULT_BASE;
 use crate::api::{ApiClient, ApiError};
 use crate::config::{Config, state_dir};
-use crate::media::MediaBridge;
+use crate::media::{Media, MediaKey, Mirror};
 use crate::player::{self, PlayerCommand, PlayerHandle};
 use crate::session::SessionStore;
 use crate::ui::{self, Theme};
-use state::{AppState, Playback, Toast};
+use state::{AppState, Toast};
 use update::{Action, ApiErrorKind, ApiReply, Effect, update};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -255,7 +255,10 @@ pub async fn run() -> anyhow::Result<()> {
         tx: tx.clone(),
         config_path,
     };
-    let mut media = MediaBridge::new(tx);
+    let (key_tx, mut key_rx) = unbounded_channel::<MediaKey>();
+    let media = Media::start(key_tx).await;
+    let mut mirror = Mirror::default();
+    let mut shown_position = Duration::ZERO;
 
     if state.user_id.is_some() {
         rt.exec(Effect::FetchStates, &state);
@@ -267,8 +270,6 @@ pub async fn run() -> anyhow::Result<()> {
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(TICK);
     let mut last_tick = Instant::now();
-    let mut shown_track: Option<String> = None;
-    let mut shown_playback = Playback::Idle;
 
     let result: anyhow::Result<()> = async {
         loop {
@@ -288,23 +289,21 @@ pub async fn run() -> anyhow::Result<()> {
                 }
                 Some(ev) = player_rx.recv() => Some(Action::Player(ev)),
                 Some(a) = rx.recv() => Some(a),
+                Some(k) = key_rx.recv() => Some(Action::Media(k)),
             };
             let Some(action) = action else { continue };
             for effect in update(&mut state, action) {
                 rt.exec(effect, &state);
             }
 
-            if let Some(m) = &mut media {
-                let track = state.now.as_ref().map(|n| n.track.id.clone());
-                if track != shown_track {
-                    if let Some(now) = &state.now {
-                        m.set_track(now);
-                    }
-                    shown_track = track;
-                }
-                if state.playback != shown_playback {
-                    m.set_playback(state.playback);
-                    shown_playback = state.playback;
+            if let Some(m) = &media {
+                mirror
+                    .sync(m, state.now.as_ref(), state.playback, state.config.volume)
+                    .await;
+                // Only real reports from the engine; MPRIS interpolates between them.
+                if state.position != shown_position {
+                    shown_position = state.position;
+                    m.set_position(state.position).await;
                 }
             }
             if state.quit {

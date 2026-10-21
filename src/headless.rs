@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 
 use crate::api::{ApiClient, EffectLevel, Serving, SessionRequest, is_unauthorized};
+use crate::app::state::Playback;
 use crate::cli::{PlayArgs, client_from_store, resolve_activity, resolve_state};
 use crate::config::{Config, StatePrefs};
+use crate::media::{Media, MediaKey, Mirror};
 use crate::player::{self, PlayerCommand, PlayerEvent};
 use crate::session::SessionStore;
 use crate::timer::{Phase, Timer, TimerEvent, TimerMode, format_clock, parse_intervals};
@@ -58,6 +60,63 @@ where
         }
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no attempts made")))
+}
+
+/// Why headless playback is silent: the user paused it, or an interval break.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Pauses {
+    pub(crate) user: bool,
+    pub(crate) rest: bool,
+}
+
+/// What the engine should do after a media key or a phase change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyEffect {
+    Nothing,
+    Play,
+    Pause,
+    Skip,
+    Volume(u8),
+}
+
+impl Pauses {
+    pub(crate) fn paused(self) -> bool {
+        self.user || self.rest
+    }
+
+    /// Enters or leaves an interval break without overriding a user pause.
+    pub(crate) fn set_rest(&mut self, rest: bool) -> KeyEffect {
+        let was = self.paused();
+        self.rest = rest;
+        match (was, self.paused()) {
+            (false, true) => KeyEffect::Pause,
+            (true, false) => KeyEffect::Play,
+            _ => KeyEffect::Nothing,
+        }
+    }
+
+    fn set_user(&mut self, user: bool) -> KeyEffect {
+        let was = self.paused();
+        self.user = user;
+        match (was, self.paused()) {
+            (false, true) => KeyEffect::Pause,
+            (true, false) => KeyEffect::Play,
+            _ => KeyEffect::Nothing,
+        }
+    }
+}
+
+pub(crate) fn on_media_key(p: &mut Pauses, key: MediaKey) -> KeyEffect {
+    match key {
+        MediaKey::Toggle => {
+            let user = !p.paused();
+            p.set_user(user)
+        }
+        MediaKey::Play => p.set_user(false),
+        MediaKey::Pause => p.set_user(true),
+        MediaKey::Next => KeyEffect::Skip,
+        MediaKey::SetVolume(v) => KeyEffect::Volume(v.min(100)),
+    }
 }
 
 /// A failed *queued* track only drops the prefetch; the current track plays on.
@@ -166,7 +225,11 @@ pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result
     player.send(command_for(&now, false)?);
     let mut next: Option<Serving> = None;
     let mut pos = Duration::ZERO;
-    let mut paused = false;
+    let mut pauses = Pauses::default();
+    let mut volume = config.volume.min(100);
+    let (key_tx, mut keys) = tokio::sync::mpsc::unbounded_channel::<MediaKey>();
+    let media = Media::start(key_tx).await;
+    let mut mirror = Mirror::default();
     let mut errors = 0u32;
     let mut ticker = tokio::time::interval(TICK);
     let mut out = std::io::stderr();
@@ -198,7 +261,12 @@ pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result
                         errors = 0;
                         timer.start();
                     }
-                    PlayerEvent::Position { pos: p, .. } => pos = p,
+                    PlayerEvent::Position { pos: p, .. } => {
+                        pos = p;
+                        if let Some(m) = &media {
+                            m.set_position(pos).await;
+                        }
+                    }
                     PlayerEvent::NearEnd { .. } => {
                         if next.is_none() && !prefetching {
                             prefetching = true;
@@ -238,6 +306,30 @@ pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result
                         player.send(command_for(&now, false)?);
                     }
                 },
+                Some(key) = keys.recv() => match on_media_key(&mut pauses, key) {
+                    KeyEffect::Nothing => {}
+                    KeyEffect::Play => {
+                        player.send(PlayerCommand::Play);
+                        timer.start();
+                    }
+                    KeyEffect::Pause => {
+                        player.send(PlayerCommand::Pause);
+                        timer.pause();
+                    }
+                    KeyEffect::Skip => {
+                        let Some(s) = or_ctrl_c(fetch()).await? else {
+                            fade = Duration::ZERO;
+                            break;
+                        };
+                        next = None;
+                        now = s;
+                        player.send(command_for(&now, false)?);
+                    }
+                    KeyEffect::Volume(v) => {
+                        volume = v;
+                        player.send(PlayerCommand::SetVolume(f32::from(v) / 100.0));
+                    }
+                },
                 Some(r) = prefetched.recv() => {
                     prefetching = false;
                     match r {
@@ -261,12 +353,19 @@ pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result
                         }
                         Some(TimerEvent::PhaseChanged(phase)) => {
                             player.send(PlayerCommand::Chime);
-                            paused = phase == Phase::Rest;
-                            player.send(if paused { PlayerCommand::Pause } else { PlayerCommand::Play });
+                            match pauses.set_rest(phase == Phase::Rest) {
+                                KeyEffect::Pause => player.send(PlayerCommand::Pause),
+                                KeyEffect::Play => player.send(PlayerCommand::Play),
+                                _ => {}
+                            }
                         }
                         None => {}
                     }
-                    write!(out, "\r\x1b[2K{}", status_line(&now, pos, &timer, paused))?;
+                    if let Some(m) = &media {
+                        let status = if pauses.paused() { Playback::Paused } else { Playback::Playing };
+                        mirror.sync(m, Some(&now), status, volume).await;
+                    }
+                    write!(out, "\r\x1b[2K{}", status_line(&now, pos, &timer, pauses.paused()))?;
                     out.flush()?;
                 }
             }
@@ -310,6 +409,59 @@ mod tests {
             "trackVariation": {"id": "v", "url": "x.mp3", "lengthInSeconds": 10}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn toggle_pauses_then_resumes() {
+        let mut p = Pauses::default();
+        assert_eq!(on_media_key(&mut p, MediaKey::Toggle), KeyEffect::Pause);
+        assert!(p.paused());
+        assert_eq!(on_media_key(&mut p, MediaKey::Toggle), KeyEffect::Play);
+        assert!(!p.paused());
+    }
+
+    #[test]
+    fn play_and_pause_are_idempotent() {
+        let mut p = Pauses::default();
+        assert_eq!(on_media_key(&mut p, MediaKey::Play), KeyEffect::Nothing);
+        assert_eq!(on_media_key(&mut p, MediaKey::Pause), KeyEffect::Pause);
+        assert_eq!(on_media_key(&mut p, MediaKey::Pause), KeyEffect::Nothing);
+    }
+
+    #[test]
+    fn user_play_during_a_break_keeps_the_break_silent() {
+        let mut p = Pauses {
+            user: true,
+            rest: true,
+        };
+        assert_eq!(on_media_key(&mut p, MediaKey::Play), KeyEffect::Nothing);
+        assert!(p.paused(), "still the rest phase");
+        assert!(!p.user);
+    }
+
+    #[test]
+    fn break_ending_does_not_override_a_user_pause() {
+        let mut p = Pauses {
+            user: true,
+            rest: true,
+        };
+        assert_eq!(p.set_rest(false), KeyEffect::Nothing);
+        let mut p = Pauses {
+            user: false,
+            rest: true,
+        };
+        assert_eq!(p.set_rest(false), KeyEffect::Play);
+        assert_eq!(p.set_rest(true), KeyEffect::Pause);
+    }
+
+    #[test]
+    fn next_and_volume_pass_through() {
+        let mut p = Pauses::default();
+        assert_eq!(on_media_key(&mut p, MediaKey::Next), KeyEffect::Skip);
+        assert_eq!(
+            on_media_key(&mut p, MediaKey::SetVolume(30)),
+            KeyEffect::Volume(30)
+        );
     }
 
     #[test]

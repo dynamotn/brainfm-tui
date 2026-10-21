@@ -830,3 +830,12 @@ fn stale_session_failure_ignored() {
         "the newer skip is still pending"
     );
 }
+
+#[test]
+fn media_volume_sets_player_volume_and_saves() {
+    let mut s = ready();
+    let fx = update(&mut s, Action::Media(MediaKey::SetVolume(25)));
+    assert_eq!(s.config.volume, 25);
+    assert!(fx.contains(&Effect::Player(PlayerCommand::SetVolume(0.25))));
+    assert!(fx.contains(&Effect::SaveConfig));
+}

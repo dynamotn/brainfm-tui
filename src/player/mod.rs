@@ -98,6 +98,34 @@ pub fn redact_urls(text: &str) -> String {
     out
 }
 
+/// Environment variable that forces an audio backend, e.g. `alsa`.
+pub const AUDIO_HOST_ENV: &str = "BRAINFM_AUDIO_HOST";
+
+/// Picks the audio host named in `requested` from `available` (id, display
+/// name). `None` means "use cpal's default", which already prefers `PipeWire`,
+/// then `PulseAudio`, then ALSA when they are compiled in.
+pub(crate) fn choose_host<T: Copy>(
+    requested: Option<&str>,
+    available: &[(T, &str)],
+) -> anyhow::Result<Option<T>> {
+    let Some(want) = requested.map(str::trim).filter(|w| !w.is_empty()) else {
+        return Ok(None);
+    };
+    let want = want.to_ascii_lowercase();
+    let wanted = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name == want || (want == "pulse" && name == "pulseaudio")
+    };
+    if let Some((id, _)) = available.iter().find(|(_, name)| wanted(name)) {
+        return Ok(Some(*id));
+    }
+    let names: Vec<&str> = available.iter().map(|(_, n)| *n).collect();
+    anyhow::bail!(
+        "audio host {want:?} is not available; choose one of: {}",
+        names.join(", ")
+    )
+}
+
 /// True once per track when it is within [`PREFETCH_LEAD`] of its end.
 #[must_use]
 pub fn near_end(length: Duration, pos: Duration, already: bool) -> bool {
@@ -163,5 +191,36 @@ mod redact_tests {
     #[test]
     fn leaves_plain_text_alone() {
         assert_eq!(redact_urls("timed out"), "timed out");
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    const HOSTS: [(u8, &str); 2] = [(1, "PulseAudio"), (2, "ALSA")];
+
+    #[test]
+    fn no_request_uses_the_default_host() {
+        assert_eq!(choose_host(None, &HOSTS).unwrap(), None);
+        assert_eq!(choose_host(Some(""), &HOSTS).unwrap(), None);
+    }
+
+    #[test]
+    fn request_matches_case_insensitively_with_aliases() {
+        assert_eq!(choose_host(Some("alsa"), &HOSTS).unwrap(), Some(2));
+        assert_eq!(choose_host(Some("Pulse"), &HOSTS).unwrap(), Some(1));
+        assert_eq!(choose_host(Some("pulseaudio"), &HOSTS).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn unknown_or_unavailable_host_is_an_error_listing_choices() {
+        let err = choose_host(Some("pipewire"), &HOSTS)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("pipewire") && err.contains("PulseAudio, ALSA"),
+            "{err}"
+        );
     }
 }

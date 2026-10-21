@@ -28,8 +28,10 @@ written in Rust. No browser, no Electron, no external player.
   one ends, so playback continues without a gap.
 - **Your filters, per state.** Activity, genres and neural effect level are
   remembered separately for Focus, Relax, Sleep and Meditate.
-- **Plays nicely with your desktop.** Media keys and `playerctl` work through
-  MPRIS.
+- **Plays nicely with your desktop.** Shows up in your desktop's media
+  widget, and media keys and `playerctl` control it, both in the TUI and in
+  `brainfm play`. Audio goes through PulseAudio or PipeWire, so it gets its
+  own volume slider in your mixer.
 - **Scriptable.** `brainfm play focus --intervals 25m/5m` runs a headless
   session from a shell, a status bar or a cron job.
 - **Light and private.** One small binary. Audio streams into memory and is
@@ -78,17 +80,17 @@ sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf brainfm-v*-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-On Linux the binary needs `libasound.so.2` and `libdbus-1.so.3`, which most
-desktops already have.
+On Linux the binary only needs `libasound.so.2`, which every desktop has.
 
 ### From source
 
-You need Rust 1.91 or newer. On Linux you also need the ALSA and D-Bus
-headers: `alsa-lib dbus` on Arch, `libasound2-dev libdbus-1-dev` on
-Debian/Ubuntu.
+You need Rust 1.91 or newer. On Linux you also need the ALSA headers:
+`alsa-lib` on Arch, `libasound2-dev` on Debian/Ubuntu.
 
 ```sh
 cargo install --git https://github.com/dynamotn/brainfm-tui
+# or, to talk to PipeWire natively (needs libpipewire >= 0.3.53 and clang):
+cargo install --git https://github.com/dynamotn/brainfm-tui --features pipewire
 ```
 
 ## Log in
@@ -138,6 +140,34 @@ Run `brainfm` with no arguments. Press `?` at any time for the key list.
 
 Without truecolor support the TUI falls back to 256 colours. Set
 `BRAINFM_ASCII=1` if your font lacks the symbols.
+
+## Audio and media keys
+
+brainfm picks the first sound system that answers: native PipeWire (only in
+`--features pipewire` builds), then PulseAudio, which also covers PipeWire
+through `pipewire-pulse`, then plain ALSA. To force one, set
+`BRAINFM_AUDIO_HOST` to `pipewire`, `pulse` or `alsa`. The log says which one
+was used. In the mixer the stream shows up as `cpal-pulseaudio-<pid>`; the
+audio library picks that name.
+
+On Linux brainfm registers as an MPRIS player, `org.mpris.MediaPlayer2.brainfm`.
+A second copy running at the same time registers as
+`brainfm.instance<pid>`, so both can be controlled.
+
+| Works | Not supported |
+|---|---|
+| play, pause, play-pause, stop, next | previous, seek, set position |
+| volume (read and set) | open URI, raise, quit |
+| title, genre, length, cover art, a unique track id per song | loop and shuffle |
+| playback position | |
+
+```sh
+playerctl -p brainfm play-pause
+playerctl -p brainfm metadata --format '{{ title }} · {{ album }}'
+```
+
+On macOS brainfm uses the system Now Playing controls instead (built in CI,
+not yet tested on a real Mac).
 
 ## Scripting
 

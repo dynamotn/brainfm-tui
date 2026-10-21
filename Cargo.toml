@@ -15,6 +15,7 @@ publish = false
 anyhow = "1.0.104"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+cpal = { version = "0.18", features = ["pulseaudio"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6"
 futures = "0.3.34"
@@ -25,7 +26,6 @@ rodio = "0.23"
 rpassword = "7.5.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-souvlaki = "0.8"
 stream-download = { version = "0.24", default-features = false, features = ["reqwest"] }
 tempfile = "3"
 thiserror = "2"
@@ -36,6 +36,12 @@ tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
 tui-big-text = "0.8"
 url = "2"
+
+[features]
+# Talk to PipeWire natively instead of through pipewire-pulse. Needs
+# libpipewire >= 0.3.53 and clang at build time, and libpipewire at runtime,
+# so release binaries leave it off.
+pipewire = ["cpal/pipewire"]
 
 [dev-dependencies]
 insta = "1.49.0"
@@ -66,3 +72,9 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "unwind"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "6", default-features = false, features = ["service", "tokio"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = "0.8"
