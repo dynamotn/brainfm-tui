@@ -16,7 +16,7 @@ anyhow = "1.0.104"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 cpal = { version = "0.18", features = ["pulseaudio"] }
-crossterm = { version = "0.29", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream", "serde"] }
 directories = "6"
 futures = "0.3.34"
 humantime = "2.4.0"

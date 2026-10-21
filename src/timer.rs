@@ -3,15 +3,16 @@
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimerMode {
     Infinite,
     Countdown(Duration),
     Intervals { focus: Duration, rest: Duration },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Phase {
     Focus,
     Rest,
@@ -23,7 +24,7 @@ pub enum TimerEvent {
     PhaseChanged(Phase),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Timer {
     mode: TimerMode,
     elapsed: Duration,

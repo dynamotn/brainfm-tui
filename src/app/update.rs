@@ -75,6 +75,8 @@ pub enum ApiReply {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Key(KeyEvent),
+    /// A key pressed in an attached view; it can never quit the host.
+    RemoteKey(KeyEvent),
     Tick(Duration),
     Player(PlayerEvent),
     Api(ApiReply),
@@ -111,7 +113,10 @@ pub fn update(s: &mut AppState, action: Action) -> Vec<Effect> {
     let mut fx = Vec::new();
     match action {
         Action::Key(k) if k.kind != KeyEventKind::Release => on_key(s, k, &mut fx),
-        Action::Key(_) => {}
+        Action::RemoteKey(k) if k.kind != KeyEventKind::Release && !is_quit_key(s, &k) => {
+            on_key(s, k, &mut fx);
+        }
+        Action::Key(_) | Action::RemoteKey(_) => {}
         Action::Tick(dt) => on_tick(s, dt, &mut fx),
         Action::Player(e) => on_player(s, e, &mut fx),
         Action::Api(r) => on_api(s, r, &mut fx),
@@ -125,6 +130,13 @@ pub fn update(s: &mut AppState, action: Action) -> Vec<Effect> {
         },
     }
     fx
+}
+
+/// Keys that quit the window they are pressed in: Ctrl-C always, `q` unless
+/// a popup is open (where it closes the popup or is typed into the form).
+pub(crate) fn is_quit_key(s: &AppState, k: &KeyEvent) -> bool {
+    let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c');
+    ctrl_c || (k.code == KeyCode::Char('q') && s.overlay.is_none())
 }
 
 fn toast(s: &mut AppState, text: impl Into<String>) {

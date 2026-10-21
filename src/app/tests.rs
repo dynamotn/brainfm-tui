@@ -937,3 +937,22 @@ fn debug_output_never_contains_the_password() {
     };
     assert_eq!(password.expose(), "hunter2");
 }
+
+#[test]
+fn remote_keys_drive_the_session_but_cannot_quit_it() {
+    let mut s = ready();
+    let fx = update(
+        &mut s,
+        Action::RemoteKey(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+    );
+    assert!(has_session(&fx, Intent::Now));
+    update(
+        &mut s,
+        Action::RemoteKey(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+    );
+    update(
+        &mut s,
+        Action::RemoteKey(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    assert!(!s.quit);
+}

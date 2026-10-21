@@ -3,6 +3,8 @@
 
 pub mod state;
 pub mod update;
+#[cfg(unix)]
+mod view;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -222,9 +224,49 @@ fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard>
     Ok(guard)
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    let _log = init_logging()?;
+#[cfg(unix)]
+enum Start {
+    /// This window was a view of another session, which has ended.
+    Joined,
+    /// This window owns the session (`None` if the socket is unusable).
+    Host(Option<(crate::share::Host, crate::share::SocketGuard)>),
+}
 
+/// Attaches to a running session as a view, or claims the socket as host.
+#[cfg(unix)]
+async fn join_or_host() -> anyhow::Result<Start> {
+    use crate::share::{Attach, Host, SocketGuard, attach, socket_path};
+    let path = socket_path()?;
+    for _ in 0..2 {
+        match attach(&path).await? {
+            Attach::Session(client) => {
+                view::run(client).await?;
+                return Ok(Start::Joined);
+            }
+            Attach::Busy(reason) => anyhow::bail!("{reason}"),
+            Attach::NoHost => match Host::bind(&path) {
+                Ok(h) => return Ok(Start::Host(Some((h, SocketGuard(path))))),
+                // Another window started at the same moment; join it.
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {}
+                Err(e) => {
+                    tracing::warn!("cannot share the session: {e}");
+                    break;
+                }
+            },
+        }
+    }
+    Ok(Start::Host(None))
+}
+
+struct Setup {
+    config_path: PathBuf,
+    store: SessionStore,
+    client: ApiClient,
+    state: AppState,
+}
+
+/// Loads config and session and builds the API client and starting state.
+fn setup() -> anyhow::Result<Setup> {
     let config_path = Config::default_path()?;
     let (config, config_writable, config_error) = match Config::load(&config_path) {
         Ok(c) => (c, true, None),
@@ -235,19 +277,12 @@ pub async fn run() -> anyhow::Result<()> {
         tracing::warn!("ignoring stored session: {e:#}");
         None
     });
-
-    // Fail before touching the terminal if there is no audio device.
-    let (player, mut player_rx) = player::spawn(tokio::runtime::Handle::current())?;
-    player.send(PlayerCommand::SetVolume(f32::from(config.volume) / 100.0));
-
-    let (tx, mut rx) = unbounded_channel::<Action>();
     let writer = store.clone();
     let mut client = ApiClient::new(Url::parse(DEFAULT_BASE)?)
         .on_token_refresh(move |t| writer.refresh_in_background(t));
     if let Some(s) = &session {
         client = client.with_token(&s.token);
     }
-
     let mut state = AppState::new(config, config_writable, session.map(|s| s.user_id));
     if let Some(e) = config_error {
         state.toast = Some(Toast {
@@ -255,6 +290,38 @@ pub async fn run() -> anyhow::Result<()> {
             ..Toast::new(format!("Using defaults — {e}"))
         });
     }
+    Ok(Setup {
+        config_path,
+        store,
+        client,
+        state,
+    })
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let _log = init_logging()?;
+
+    // A second window joins the running session instead of starting its own.
+    #[cfg(unix)]
+    let host = match join_or_host().await? {
+        Start::Joined => return Ok(()),
+        Start::Host(host) => host,
+    };
+
+    let Setup {
+        config_path,
+        store,
+        client,
+        mut state,
+    } = setup()?;
+
+    // Fail before touching the terminal if there is no audio device.
+    let (player, mut player_rx) = player::spawn(tokio::runtime::Handle::current())?;
+    player.send(PlayerCommand::SetVolume(
+        f32::from(state.config.volume) / 100.0,
+    ));
+
+    let (tx, mut rx) = unbounded_channel::<Action>();
     let rt = Runtime {
         client,
         store,
@@ -262,6 +329,15 @@ pub async fn run() -> anyhow::Result<()> {
         tx: tx.clone(),
         config_path,
     };
+    let (state_tx, state_rx) = tokio::sync::watch::channel(serde_json::to_string(&state)?);
+    #[cfg(unix)]
+    let _socket = host.map(|(h, guard)| {
+        tokio::spawn(h.serve(state_rx, tx.clone()));
+        guard
+    });
+    #[cfg(not(unix))]
+    drop(state_rx);
+
     let (key_tx, mut key_rx) = unbounded_channel::<MediaKey>();
     let media = Media::start(key_tx).await;
     let mut mirror = Mirror::default();
@@ -302,6 +378,14 @@ pub async fn run() -> anyhow::Result<()> {
             for effect in update(&mut state, action) {
                 rt.exec(effect, &state);
             }
+            let json = serde_json::to_string(&state)?;
+            state_tx.send_if_modified(|current| {
+                let changed = *current != json;
+                if changed {
+                    *current = json;
+                }
+                changed
+            });
 
             if let Some(m) = &media {
                 mirror

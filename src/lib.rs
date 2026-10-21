@@ -21,5 +21,7 @@ pub(crate) mod media;
 pub mod player;
 pub mod secret;
 pub(crate) mod session;
+#[cfg(unix)]
+pub(crate) mod share;
 pub(crate) mod timer;
 pub(crate) mod ui;

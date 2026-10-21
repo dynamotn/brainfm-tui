@@ -40,6 +40,20 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// Only the length crosses the wire (as `*`s): enough to draw the mask,
+/// never the secret itself.
+impl serde::Serialize for Secret {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&"*".repeat(self.char_count()))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Secret {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(Secret)
+    }
+}
+
 impl Drop for Secret {
     fn drop(&mut self) {
         self.0.zeroize();

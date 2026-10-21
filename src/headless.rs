@@ -213,6 +213,8 @@ fn timer_mode(args: &PlayArgs) -> anyhow::Result<TimerMode> {
 // a dozen locals across awaits, which reads worse when split up.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    let _socket = claim_session().await?;
     let (client, session) = client_from_store(store)?;
     let config = Config::load(&Config::default_path()?)?;
     let req = resolve_request(&client, &config, &args).await?;
@@ -383,6 +385,32 @@ pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result
         eprintln!("Session complete");
     }
     Ok(())
+}
+
+/// Holds the shared-session socket so a TUI opened meanwhile explains why it
+/// cannot start, instead of playing a second stream.
+#[cfg(unix)]
+async fn claim_session() -> anyhow::Result<Option<crate::share::SocketGuard>> {
+    use crate::share::{Attach, Host, SocketGuard, attach, socket_path};
+    let path = socket_path()?;
+    match attach(&path).await? {
+        Attach::Session(_) => {
+            bail!("A brainfm TUI is already playing; control it there, or quit it first")
+        }
+        Attach::Busy(reason) => bail!("{reason}"),
+        Attach::NoHost => match Host::bind(&path) {
+            Ok(host) => {
+                tokio::spawn(host.refuse(
+                    "`brainfm play` is running in another terminal; stop it there first (Ctrl-C)",
+                ));
+                Ok(Some(SocketGuard(path)))
+            }
+            Err(e) => {
+                tracing::warn!("cannot claim the session socket: {e}");
+                Ok(None)
+            }
+        },
+    }
 }
 
 /// Awaits `fut`, or returns `None` if Ctrl-C arrives first.

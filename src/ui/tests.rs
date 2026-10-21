@@ -198,3 +198,28 @@ fn renders_with_out_of_range_volume() {
     s.config.volume = 150;
     render(&s, 80, 24);
 }
+
+#[test]
+fn state_round_trips_through_the_wire_and_renders_the_same() {
+    let mut s = playing();
+    s.overlay = Some(crate::app::state::Overlay::Timer { sel: 2 });
+    let wire = serde_json::to_string(&s).unwrap();
+    let back: AppState = serde_json::from_str(&wire).unwrap();
+    assert_eq!(text(&render(&s, 140, 40)), text(&render(&back, 140, 40)));
+}
+
+#[test]
+fn the_wire_never_carries_the_password() {
+    let mut s = AppState::new(Config::default(), true, None);
+    if let Some(crate::app::state::Overlay::Login { password, .. }) = &mut s.overlay {
+        *password = "hunter2".into();
+    }
+    let wire = serde_json::to_string(&s).unwrap();
+    assert!(!wire.contains("hunter2"), "{wire}");
+    let back: AppState = serde_json::from_str(&wire).unwrap();
+    assert_eq!(
+        text(&render(&s, 100, 30)),
+        text(&render(&back, 100, 30)),
+        "same mask length"
+    );
+}

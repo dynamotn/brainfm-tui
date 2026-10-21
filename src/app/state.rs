@@ -3,6 +3,8 @@
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::api::{Activity, EffectLevel, MentalState, Serving, SessionRequest};
 use crate::config::{Config, StatePrefs};
 use crate::secret::Secret;
@@ -10,7 +12,7 @@ use crate::timer::{Timer, TimerMode};
 
 const TOAST_TTL: Duration = Duration::from_secs(4);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Playback {
     Idle,
     Loading,
@@ -18,7 +20,7 @@ pub enum Playback {
     Paused,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PanelTab {
     Library,
     Explore,
@@ -38,7 +40,7 @@ impl PanelTab {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Panel {
     pub visible: bool,
     pub tab: PanelTab,
@@ -47,13 +49,13 @@ pub struct Panel {
     pub recents: Vec<Serving>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoginField {
     Email,
     Password,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Overlay {
     Activity {
         sel: usize,
@@ -90,7 +92,7 @@ impl Overlay {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Toast {
     pub text: String,
     pub ttl: Duration,
@@ -105,7 +107,8 @@ impl Toast {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Everything a view needs to draw; sent whole to attached TUIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
     pub states: Vec<MentalState>,
     pub state_idx: usize,
