@@ -89,14 +89,19 @@ impl Config {
         }
     }
 
+    /// Writes atomically through a temp file unique to this write, so two
+    /// running instances never clobber each other's half-written file.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        }
-        let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, toml::to_string_pretty(self)?)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
+        use std::io::Write;
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .with_context(|| format!("writing into {}", dir.display()))?;
+        tmp.write_all(toml::to_string_pretty(self)?.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -129,6 +134,30 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "volume = 150").unwrap();
         assert_eq!(Config::load(&path).unwrap().volume, 100);
+    }
+
+    #[test]
+    fn concurrent_saves_never_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let small = Config::default();
+        let mut big = Config::default();
+        for i in 0..50 {
+            big.states
+                .insert(format!("state{i}"), StatePrefs::default());
+        }
+        std::thread::scope(|sc| {
+            for i in 0..8 {
+                let (path, c) = (&path, if i % 2 == 0 { &small } else { &big });
+                sc.spawn(move || {
+                    for _ in 0..30 {
+                        c.save(path).unwrap();
+                    }
+                });
+            }
+        });
+        let loaded = Config::load(&path).unwrap();
+        assert!(loaded == small || loaded == big);
     }
 
     #[test]

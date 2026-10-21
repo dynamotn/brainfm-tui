@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::state::{AppState, LoginField, Overlay, PanelTab, Playback, Toast};
 use crate::api::{Activity, EffectLevel, MentalState, Serving, SessionRequest};
 use crate::player::{PlayerCommand, PlayerEvent};
+use crate::secret::Secret;
 use crate::timer::{Phase, Timer, TimerEvent};
 
 const MAX_ERRORS_IN_A_ROW: u32 = 3;
@@ -54,6 +55,12 @@ pub enum ApiReply {
     LoggedIn {
         user_id: String,
     },
+    /// A favorite toggle failed; the optimistic change is undone.
+    FavoriteFailed {
+        track_id: String,
+        on: bool,
+        error: ApiErrorKind,
+    },
     /// A `StartSession` failed; carries its generation so stale ones are ignored.
     SessionFailed {
         generation: u64,
@@ -95,7 +102,7 @@ pub enum Effect {
     FetchLibrary,
     Login {
         email: String,
-        password: String,
+        password: Secret,
     },
     SaveConfig,
 }
@@ -131,20 +138,23 @@ fn save_config(s: &AppState, fx: &mut Vec<Effect>) {
 }
 
 fn start_session(s: &mut AppState, intent: Intent, fx: &mut Vec<Effect>) {
-    match s.session_request() {
-        Some(req) => {
-            s.session_gen += 1;
-            if intent == Intent::Now {
-                begin_loading(s);
-            }
-            fx.push(Effect::StartSession {
-                req,
-                intent,
-                generation: s.session_gen,
-            });
+    let Some(req) = s.session_request() else {
+        if intent == Intent::Now {
+            s.restart_when_ready = true;
         }
-        None => toast(s, "Still loading mental states…"),
+        toast(s, "Loading activities…");
+        return;
+    };
+    s.session_gen += 1;
+    if intent == Intent::Now {
+        s.restart_when_ready = false;
+        begin_loading(s);
     }
+    fx.push(Effect::StartSession {
+        req,
+        intent,
+        generation: s.session_gen,
+    });
 }
 
 /// Enters `Loading`, remembering what the engine is doing meanwhile.
@@ -598,6 +608,9 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
         ApiReply::Activities { state_id, items } => {
             if s.current_state().is_some_and(|st| st.id == state_id) {
                 s.activities = items;
+                if s.restart_when_ready {
+                    skip(s, fx);
+                }
             }
         }
         ApiReply::Genres { state_id, items } => {
@@ -649,6 +662,18 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
             },
             fx,
         ),
+        ApiReply::FavoriteFailed {
+            track_id,
+            on,
+            error,
+        } => {
+            if on {
+                s.favorite_ids.remove(&track_id);
+            } else {
+                s.favorite_ids.insert(track_id);
+            }
+            on_failed(s, "favorite", error, fx);
+        }
         ApiReply::Failed { what, error } => on_failed(s, what, error, fx),
     }
 }
@@ -670,7 +695,7 @@ fn on_failed(s: &mut AppState, what: &'static str, error: ApiErrorKind, fx: &mut
                 _ => {
                     s.overlay = Some(Overlay::Login {
                         email: String::new(),
-                        password: String::new(),
+                        password: Secret::default(),
                         field: LoginField::Email,
                         error: Some("Session expired — log in again".into()),
                     });

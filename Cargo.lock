@@ -299,6 +299,7 @@ dependencies = [
  "url",
  "wiremock",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]

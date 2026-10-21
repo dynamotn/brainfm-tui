@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::api::{Activity, EffectLevel, MentalState, Serving, SessionRequest};
 use crate::config::{Config, StatePrefs};
+use crate::secret::Secret;
 use crate::timer::{Timer, TimerMode};
 
 const TOAST_TTL: Duration = Duration::from_secs(4);
@@ -70,7 +71,7 @@ pub enum Overlay {
     },
     Login {
         email: String,
-        password: String,
+        password: Secret,
         field: LoginField,
         error: Option<String>,
     },
@@ -82,7 +83,7 @@ impl Overlay {
     pub fn login() -> Self {
         Self::Login {
             email: String::new(),
-            password: String::new(),
+            password: Secret::default(),
             field: LoginField::Email,
             error: None,
         }
@@ -126,6 +127,9 @@ pub struct AppState {
     pub toast: Option<Toast>,
     pub user_id: Option<String>,
     pub errors_in_a_row: u32,
+    /// Playback was asked for before the state's activities were known;
+    /// start once they arrive.
+    pub restart_when_ready: bool,
     /// Bumped on every session request; replies carrying an older value are stale.
     pub session_gen: u64,
     /// What `playback` returns to if a `Loading` request fails.
@@ -166,6 +170,7 @@ impl AppState {
             toast: None,
             user_id,
             errors_in_a_row: 0,
+            restart_when_ready: false,
             session_gen: 0,
             resume_to: Playback::Idle,
             loading_for: Duration::ZERO,

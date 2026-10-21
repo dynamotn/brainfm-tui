@@ -220,7 +220,7 @@ impl ApiClient {
         let env: Option<Envelope> = serde_json::from_str(&text).ok();
 
         match status {
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => return Err(ApiError::Unauthorized),
+            StatusCode::UNAUTHORIZED => return Err(ApiError::Unauthorized),
             StatusCode::TOO_MANY_REQUESTS => return Err(ApiError::RateLimited),
             s if !s.is_success() => {
                 let message = env.and_then(|e| e.messages).map_or_else(

@@ -36,6 +36,7 @@ tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
 tui-big-text = "0.8"
 url = "2"
+zeroize = "1"
 
 [features]
 # Talk to PipeWire natively instead of through pipewire-pulse. Needs

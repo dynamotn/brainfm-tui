@@ -288,3 +288,22 @@ async fn unchanged_token_does_not_notify() {
     c.mental_states().await.unwrap();
     assert_eq!(*calls.lock().unwrap(), 0);
 }
+
+#[tokio::test]
+async fn forbidden_is_a_status_error_not_an_expired_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_json(json!({"status": 403, "messages": ["Subscription expired"]})),
+        )
+        .mount(&server)
+        .await;
+    match client(&server).mental_states().await.unwrap_err() {
+        ApiError::Status { code, message } => {
+            assert_eq!(code, 403);
+            assert_eq!(message, "Subscription expired");
+        }
+        e => panic!("unexpected {e:?}"),
+    }
+}

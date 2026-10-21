@@ -19,6 +19,7 @@ pub(crate) mod config;
 pub(crate) mod headless;
 pub(crate) mod media;
 pub mod player;
+pub mod secret;
 pub(crate) mod session;
 pub(crate) mod timer;
 pub(crate) mod ui;

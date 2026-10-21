@@ -132,7 +132,14 @@ impl Runtime {
             Effect::SetFavorite { track_id, on } => self.spawn(async move {
                 match c.set_favorite(&uid, &track_id, on).await {
                     Ok(()) => library(&c, &uid).await,
-                    Err(e) => failed("favorite", &e),
+                    Err(e) => {
+                        tracing::warn!("favorite failed: {e}");
+                        Action::Api(ApiReply::FavoriteFailed {
+                            track_id,
+                            on,
+                            error: error_kind(&e),
+                        })
+                    }
                 }
             }),
             Effect::Dislike { track_id } => self.spawn_quiet(async move {
@@ -145,7 +152,7 @@ impl Runtime {
             Effect::Login { email, password } => {
                 let store = self.store.clone();
                 self.spawn(async move {
-                    let token = match c.email_login(&email, &password).await {
+                    let token = match c.email_login(&email, password.expose()).await {
                         Ok(t) => t,
                         Err(e) => return failed("login", &e),
                     };

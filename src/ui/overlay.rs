@@ -159,7 +159,7 @@ pub(super) fn draw(f: &mut Frame<'_>, o: &Overlay, s: &AppState, t: &Theme) {
             password,
             field,
             error,
-        } => draw_login(f, email, password, *field, error.as_deref(), t),
+        } => draw_login(f, email, password.char_count(), *field, error.as_deref(), t),
     }
 }
 
@@ -181,7 +181,7 @@ fn draw_help(f: &mut Frame<'_>, t: &Theme) {
 fn draw_login(
     f: &mut Frame<'_>,
     email: &str,
-    password: &str,
+    password_len: usize,
     field: LoginField,
     error: Option<&str>,
     t: &Theme,
@@ -205,7 +205,7 @@ fn draw_login(
     let mut lines = input("Email", email.to_owned(), field == LoginField::Email);
     lines.extend(input(
         "Password",
-        "•".repeat(password.chars().count()),
+        "•".repeat(password_len),
         field == LoginField::Password,
     ));
     lines.push(Line::default());

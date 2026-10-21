@@ -839,3 +839,101 @@ fn media_volume_sets_player_volume_and_saves() {
     assert!(fx.contains(&Effect::Player(PlayerCommand::SetVolume(0.25))));
     assert!(fx.contains(&Effect::SaveConfig));
 }
+
+#[test]
+fn failed_favorite_rolls_back() {
+    let mut s = playing();
+    update(&mut s, key('f'));
+    assert!(s.favorite_ids.contains("a"));
+    update(
+        &mut s,
+        Action::Api(ApiReply::FavoriteFailed {
+            track_id: "a".into(),
+            on: true,
+            error: ApiErrorKind::Other("500".into()),
+        }),
+    );
+    assert!(!s.favorite_ids.contains("a"));
+    assert!(s.toast.as_ref().unwrap().text.contains("favorite"));
+}
+
+#[test]
+fn failed_unfavorite_restores_the_heart() {
+    let mut s = playing();
+    s.favorite_ids.insert("a".into());
+    update(&mut s, key('f'));
+    update(
+        &mut s,
+        Action::Api(ApiReply::FavoriteFailed {
+            track_id: "a".into(),
+            on: false,
+            error: ApiErrorKind::Other("500".into()),
+        }),
+    );
+    assert!(s.favorite_ids.contains("a"));
+}
+
+#[test]
+fn switching_to_a_state_without_default_activity_restarts_when_activities_arrive() {
+    let mut s = playing();
+    s.states[1].default_activity = None;
+    let fx = update(&mut s, code(KeyCode::Tab));
+    assert!(!has_session(&fx, Intent::Now), "no activity known yet");
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Activities {
+            state_id: "relax".into(),
+            items: vec![Activity {
+                id: "chill".into(),
+                display_value: "Chill".into(),
+            }],
+        }),
+    );
+    let Some(Effect::StartSession {
+        req,
+        intent: Intent::Now,
+        ..
+    }) = fx.iter().find(|e| matches!(e, Effect::StartSession { .. }))
+    else {
+        panic!("expected a restart, got {fx:?}");
+    };
+    assert_eq!(req.dynamic_activity_id, "chill");
+}
+
+#[test]
+fn activities_arriving_while_idle_do_not_start_playback() {
+    let mut s = ready();
+    s.states[1].default_activity = None;
+    update(&mut s, code(KeyCode::Tab));
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Activities {
+            state_id: "relax".into(),
+            items: vec![Activity {
+                id: "chill".into(),
+                display_value: "Chill".into(),
+            }],
+        }),
+    );
+    assert!(!has_session(&fx, Intent::Now));
+}
+
+#[test]
+fn debug_output_never_contains_the_password() {
+    let mut s = ready();
+    s.overlay = Some(Overlay::login());
+    for c in "a@b.c".chars() {
+        update(&mut s, key(c));
+    }
+    update(&mut s, code(KeyCode::Tab));
+    for c in "hunter2".chars() {
+        update(&mut s, key(c));
+    }
+    assert!(!format!("{:?}", s.overlay).contains("hunter2"));
+    let fx = update(&mut s, code(KeyCode::Enter));
+    assert!(!format!("{fx:?}").contains("hunter2"), "{fx:?}");
+    let Some(Effect::Login { password, .. }) = fx.first() else {
+        panic!()
+    };
+    assert_eq!(password.expose(), "hunter2");
+}
