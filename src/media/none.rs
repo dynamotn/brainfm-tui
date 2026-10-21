@@ -1,4 +1,8 @@
 //! Platforms without media-control integration.
+//!
+//! The methods are `async` without awaiting anything so that every backend
+//! has the same signatures as the Linux MPRIS one, which does await.
+#![allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 
 use std::time::Duration;
 
