@@ -10,8 +10,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::event::KeyEvent;
@@ -30,7 +29,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long a new view waits for the host's first state or answer.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long `request_stop` waits for the host to go away.
-#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+)]
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,6 +91,20 @@ impl Host {
         if let Some(dir) = path.parent() {
             crate::session::ensure_private_dir(dir).map_err(io::Error::other)?;
         }
+        // Serialize check, remove and bind across processes, so a loser of
+        // a stale-file race cannot delete the winner's fresh socket.
+        let mut lock_name = path.as_os_str().to_owned();
+        lock_name.push(".lock");
+        let lock = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .mode(0o600)
+                .open(PathBuf::from(lock_name))?
+        };
+        lock.lock()?;
         if path.exists() {
             if std::os::unix::net::UnixStream::connect(path).is_ok() {
                 return Err(io::Error::new(
@@ -98,6 +114,7 @@ impl Host {
             }
             std::fs::remove_file(path)?;
         }
+        // `lock` is released when it drops, after the bind.
         Ok(Self {
             listener: UnixListener::bind(path)?,
         })
@@ -110,7 +127,7 @@ impl Host {
         states: watch::Receiver<String>,
         actions: UnboundedSender<Action>,
     ) {
-        let views = Arc::new(AtomicUsize::new(0));
+        let views = Arc::new(Mutex::new(0));
         loop {
             match self.listener.accept().await {
                 Ok((stream, _)) => {
@@ -158,11 +175,21 @@ fn state_line(json: &str) -> String {
     format!("{{\"t\":\"State\",\"state\":{json}}}\n")
 }
 
+/// Changes the view count and reports it under the same lock, so the
+/// reducer sees counts in the order they were reached.
+fn count_view(views: &Mutex<usize>, actions: &UnboundedSender<Action>, delta: isize) {
+    let mut n = views
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *n = n.saturating_add_signed(delta);
+    let _ = actions.send(Action::Views(*n));
+}
+
 async fn serve_view(
     stream: UnixStream,
     mut states: watch::Receiver<String>,
     actions: UnboundedSender<Action>,
-    views: Arc<AtomicUsize>,
+    views: Arc<Mutex<usize>>,
 ) {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -186,7 +213,7 @@ async fn serve_view(
         },
         _ => return,
     }
-    let _ = actions.send(Action::Views(views.fetch_add(1, Ordering::SeqCst) + 1));
+    count_view(&views, &actions, 1);
     let writer = tokio::spawn(async move {
         loop {
             let json = states.borrow_and_update().clone();
@@ -210,7 +237,7 @@ async fn serve_view(
         }
     }
     writer.abort();
-    let _ = actions.send(Action::Views(views.fetch_sub(1, Ordering::SeqCst) - 1));
+    count_view(&views, &actions, -1);
 }
 
 /// What a new TUI finds at the socket.
@@ -331,7 +358,10 @@ async fn send_key(write: &mut OwnedWriteHalf, key: KeyEvent) -> io::Result<()> {
 }
 
 /// What `brainfm stop` found.
-#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StopOutcome {
     NothingRunning,
@@ -341,7 +371,10 @@ pub(crate) enum StopOutcome {
 
 /// Connects to `path`; `None` when nothing is listening (a stale socket
 /// file is removed).
-#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+)]
 async fn connect_live(path: &Path) -> io::Result<Option<UnixStream>> {
     match UnixStream::connect(path).await {
         Ok(s) => Ok(Some(s)),
@@ -355,7 +388,10 @@ async fn connect_live(path: &Path) -> io::Result<Option<UnixStream>> {
 }
 
 /// Asks the host at `path` to stop and waits until its socket is gone.
-#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+)]
 pub(crate) async fn request_stop(path: &Path) -> io::Result<StopOutcome> {
     let Some(mut stream) = connect_live(path).await? else {
         return Ok(StopOutcome::NothingRunning);
@@ -375,7 +411,10 @@ pub(crate) async fn request_stop(path: &Path) -> io::Result<StopOutcome> {
 
 /// Asks a live host to reload its session; `false` when nothing runs or it
 /// turned the request away.
-#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+)]
 pub(crate) async fn request_reload(path: &Path) -> io::Result<bool> {
     let Some(stream) = connect_live(path).await? else {
         return Ok(false);
@@ -408,13 +447,19 @@ impl KeySender {
     }
 
     /// Asks the host to shut down.
-    #[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+    )]
     pub(crate) async fn stop(&mut self) -> io::Result<()> {
         self.0.write_all(line(&ToHost::Stop).as_bytes()).await
     }
 
     /// Asks the host to reload its session.
-    #[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "consumed by the daemon and CLI tasks")
+    )]
     pub(crate) async fn reload(&mut self) -> io::Result<()> {
         self.0.write_all(line(&ToHost::Reload).as_bytes()).await
     }

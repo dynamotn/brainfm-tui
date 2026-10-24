@@ -300,3 +300,80 @@ async fn second_bind_while_live_is_addr_in_use() {
     let err = Host::bind(&path).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_binds_over_a_stale_file_yield_one_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tui.sock");
+    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            tokio::spawn(async move { Host::bind(&path) })
+        })
+        .collect();
+    let mut hosts = Vec::new();
+    let mut in_use = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(h) => hosts.push(h),
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => in_use += 1,
+            Err(e) => panic!("unexpected {e}"),
+        }
+    }
+    assert_eq!((hosts.len(), in_use), (1, 7));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn view_counts_settle_at_zero_after_concurrent_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tui.sock");
+    let (state_tx, mut actions) = serve_at(&path);
+    state_tx
+        .send(serde_json::to_string(&AppState::new(Config::default(), true, None)).unwrap())
+        .unwrap();
+    let tasks: Vec<_> = (0..20)
+        .map(|_| {
+            let path = path.clone();
+            tokio::spawn(async move {
+                for _ in 0..5 {
+                    if let Attach::Session(c) = attach(&path).await.unwrap() {
+                        drop(c);
+                    }
+                }
+            })
+        })
+        .collect();
+    for t in tasks {
+        t.await.unwrap();
+    }
+    let mut last = None;
+    while let Ok(Some(Action::Views(n))) =
+        tokio::time::timeout(Duration::from_millis(500), actions.recv()).await
+    {
+        last = Some(n);
+    }
+    assert_eq!(last, Some(0));
+}
+
+#[tokio::test]
+async fn stop_after_hello_reaches_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tui.sock");
+    let (state_tx, mut actions) = serve_at(&path);
+    state_tx
+        .send(serde_json::to_string(&AppState::new(Config::default(), true, None)).unwrap())
+        .unwrap();
+    let Attach::Session(client) = attach(&path).await.unwrap() else {
+        panic!("expected a session");
+    };
+    let (_first, _rx, mut keys) = client.split();
+    keys.stop().await.unwrap();
+    loop {
+        match next(&mut actions).await {
+            Action::Shutdown => break,
+            Action::Views(_) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
