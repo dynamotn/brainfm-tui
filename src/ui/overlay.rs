@@ -26,6 +26,11 @@ const HELP: &[(&str, &str)] = &[
     ("j / k", "move"),
     ("enter", "select"),
     ("esc", "close"),
+    #[cfg(unix)]
+    ("q", "close"),
+    #[cfg(unix)]
+    ("Q", "stop"),
+    #[cfg(not(unix))]
     ("q", "quit"),
 ];
 

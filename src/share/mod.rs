@@ -447,19 +447,11 @@ impl KeySender {
     }
 
     /// Asks the host to shut down.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-    )]
     pub(crate) async fn stop(&mut self) -> io::Result<()> {
         self.0.write_all(line(&ToHost::Stop).as_bytes()).await
     }
 
     /// Asks the host to reload its session.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-    )]
     pub(crate) async fn reload(&mut self) -> io::Result<()> {
         self.0.write_all(line(&ToHost::Reload).as_bytes()).await
     }

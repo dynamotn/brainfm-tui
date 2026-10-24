@@ -1083,3 +1083,16 @@ fn single_process_tui_never_idles_out() {
     update(&mut s, Action::Tick(IDLE_EXIT * 2));
     assert!(!s.quit);
 }
+
+#[test]
+fn capital_q_and_l_are_not_reducer_keys() {
+    for c in ['Q', 'L'] {
+        let mut s = ready();
+        let shifted = Action::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT));
+        for action in [key(c), shifted] {
+            let fx = update(&mut s, action);
+            assert!(fx.is_empty(), "{c}: {fx:?}");
+            assert!(!s.quit, "{c} quit");
+        }
+    }
+}

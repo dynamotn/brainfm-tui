@@ -1,6 +1,5 @@
 ---
 source: src/ui/tests.rs
-assertion_line: 109
 expression: t.backend()
 ---
 " brain.fm     Focus    Relax    Sleep    Meditate                                                                                           "
@@ -42,4 +41,4 @@ expression: t.backend()
 "                             || space   >> n   <3 f   x d   vol ▮▮▮▮▮▮▮▯▯▯ 70%                            │                                 "
 "                                                                                                          │                                 "
 "                                                                                                                                            "
-" space play  n skip  f fav  d dislike  tab state  a activity  g genres  e effect  t timer  p panel  ? help  q quit                          "
+" space play  n skip  f fav  d dislike  tab state  a activity  g genres  e effect  t timer  p panel  ? help  q close  Q stop                 "

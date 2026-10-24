@@ -1,4 +1,4 @@
-//! Bottom line of key hints.
+//! Bottom line of key hints, or the session-expired banner.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -21,10 +21,24 @@ const HINTS: &[(&str, &str)] = &[
     ("t", "timer"),
     ("p", "panel"),
     ("?", "help"),
+    #[cfg(unix)]
+    ("q", "close"),
+    #[cfg(unix)]
+    ("Q", "stop"),
+    #[cfg(not(unix))]
     ("q", "quit"),
 ];
 
-pub(super) fn draw(f: &mut Frame<'_>, area: Rect, _s: &AppState, t: &Theme) {
+pub(super) fn draw(f: &mut Frame<'_>, area: Rect, s: &AppState, t: &Theme) {
+    let bar = Style::new().bg(t.surface);
+    if s.needs_login {
+        let banner = Span::styled(
+            " Session expired — press L to log in",
+            Style::new().fg(t.orange),
+        );
+        f.render_widget(Paragraph::new(Line::from(banner)).style(bar), area);
+        return;
+    }
     let mut spans = vec![Span::raw(" ")];
     let mut width = 1;
     for (k, label) in HINTS {
@@ -36,8 +50,5 @@ pub(super) fn draw(f: &mut Frame<'_>, area: Rect, _s: &AppState, t: &Theme) {
         spans.push(Span::styled(*k, Style::new().fg(t.pink)));
         spans.push(Span::styled(format!(" {label}  "), t.dim()));
     }
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::new().bg(t.surface)),
-        area,
-    );
+    f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
 }

@@ -295,3 +295,12 @@ fn long_track_details_end_with_an_ellipsis_on_narrow_terminals() {
     let line = out.lines().find(|l| l.contains("Classical")).unwrap();
     assert!(line.contains('…'), "{line}");
 }
+
+#[test]
+fn renders_session_expired_banner() {
+    let mut s = ready();
+    s.needs_login = true;
+    let t = render(&s, 80, 24);
+    assert!(text(&t).contains("Session expired — press L to log in"));
+    insta::assert_snapshot!(t.backend());
+}

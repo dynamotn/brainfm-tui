@@ -3,6 +3,10 @@
 
 #[cfg(unix)]
 pub mod daemon;
+#[cfg(unix)]
+mod login;
+#[cfg(unix)]
+mod spawn;
 pub mod state;
 pub mod update;
 #[cfg(unix)]
@@ -27,6 +31,7 @@ use crate::api::{ApiClient, ApiError};
 use crate::config::{Config, state_dir};
 use crate::media::{Media, MediaKey, Mirror};
 use crate::player::{self, PlayerCommand, PlayerEvent, PlayerHandle};
+use crate::secret::Secret;
 use crate::session::SessionStore;
 use crate::ui::{self, Theme};
 use state::{AppState, Toast};
@@ -157,21 +162,7 @@ impl Runtime {
             Effect::FetchLibrary => self.spawn(async move { library(&c, &uid).await }),
             Effect::Login { email, password } => {
                 let store = self.store.clone();
-                self.spawn(async move {
-                    let token = match c.email_login(&email, password.expose()).await {
-                        Ok(t) => t,
-                        Err(e) => return failed("login", &e),
-                    };
-                    match store.save(&token) {
-                        Ok(session) => Action::Api(ApiReply::LoggedIn {
-                            user_id: session.user_id,
-                        }),
-                        Err(e) => Action::Api(ApiReply::Failed {
-                            what: "login",
-                            error: ApiErrorKind::Other(format!("{e:#}")),
-                        }),
-                    }
-                });
+                self.spawn(async move { log_in(&c, &store, &email, &password).await });
             }
             // Written by a debounced background task (see `spawn_writer`).
             Effect::SaveConfig => {
@@ -189,6 +180,23 @@ impl Runtime {
                 Err(e) => tracing::warn!("reloading the session: {e:#}"),
             },
         }
+    }
+}
+
+/// Logs in by email and stores the session; the reply is `LoggedIn` or `Failed`.
+async fn log_in(c: &ApiClient, store: &SessionStore, email: &str, password: &Secret) -> Action {
+    let token = match c.email_login(email, password.expose()).await {
+        Ok(t) => t,
+        Err(e) => return failed("login", &e),
+    };
+    match store.save(&token) {
+        Ok(session) => Action::Api(ApiReply::LoggedIn {
+            user_id: session.user_id,
+        }),
+        Err(e) => Action::Api(ApiReply::Failed {
+            what: "login",
+            error: ApiErrorKind::Other(format!("{e:#}")),
+        }),
     }
 }
 
@@ -232,40 +240,6 @@ fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard>
         .with(filter)
         .try_init();
     Ok(guard)
-}
-
-#[cfg(unix)]
-enum Start {
-    /// This window was a view of another session, which has ended.
-    Joined,
-    /// This window owns the session (`None` if the socket is unusable).
-    Host(Option<(crate::share::Host, crate::share::SocketGuard)>),
-}
-
-/// Attaches to a running session as a view, or claims the socket as host.
-#[cfg(unix)]
-async fn join_or_host() -> anyhow::Result<Start> {
-    use crate::share::{Attach, Host, SocketGuard, attach, socket_path};
-    let path = socket_path()?;
-    for _ in 0..2 {
-        match attach(&path).await? {
-            Attach::Session(client) => {
-                view::run(client).await?;
-                return Ok(Start::Joined);
-            }
-            Attach::Busy(reason) => anyhow::bail!("{reason}"),
-            Attach::NoHost => match Host::bind(&path) {
-                Ok(h) => return Ok(Start::Host(Some((h, SocketGuard(path))))),
-                // Another window started at the same moment; join it.
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {}
-                Err(e) => {
-                    tracing::warn!("cannot share the session: {e}");
-                    break;
-                }
-            },
-        }
-    }
-    Ok(Start::Host(None))
 }
 
 struct Setup {
@@ -332,6 +306,10 @@ async fn mirror_to_media(
 
 /// Where the host loop draws: a terminal, or nowhere (the daemon).
 enum Frontend {
+    #[cfg_attr(
+        unix,
+        expect(dead_code, reason = "on Unix the TUI is a view of the daemon")
+    )]
     Terminal(Box<Screen>),
     Headless,
 }
@@ -515,24 +493,61 @@ async fn host_loop(
     result.map(|()| state)
 }
 
+/// Starts the TUI. On Unix it is a view of the daemon, which it starts if
+/// none is running; elsewhere this process plays the music itself.
 pub async fn run() -> anyhow::Result<()> {
     let _log = init_logging()?;
-
-    // A second window joins the running session instead of starting its own.
     #[cfg(unix)]
-    let host = match join_or_host().await? {
-        Start::Joined => return Ok(()),
-        Start::Host(host) => host,
-    };
+    {
+        run_view().await
+    }
+    #[cfg(not(unix))]
+    {
+        run_here().await
+    }
+}
 
+/// Logs in here if needed (the password stays in this process), then
+/// attaches to the daemon, starting it if nobody answers.
+#[cfg(unix)]
+async fn run_view() -> anyhow::Result<()> {
+    let Setup {
+        store,
+        client,
+        state,
+        ..
+    } = setup()?;
+    let theme = Theme::detect();
+    let mut terminal = ratatui::init();
+    let result = async {
+        if state.user_id.is_none()
+            && login::run(&mut terminal, &theme, &store, &client, false)
+                .await?
+                .is_none()
+        {
+            return Ok(view::Ended::ByUser);
+        }
+        let path = crate::share::socket_path()?;
+        let session = match crate::share::attach(&path).await? {
+            crate::share::Attach::Session(c) => c,
+            crate::share::Attach::Busy(reason) => anyhow::bail!("{reason}"),
+            crate::share::Attach::NoHost => spawn::start_daemon(&path).await?,
+        };
+        view::run(session, &mut terminal, &theme, &store, &client).await
+    }
+    .await;
+    ratatui::restore();
+    if let view::Ended::HostGone = result? {
+        eprintln!("The brainfm session in the other window has ended.");
+    }
+    Ok(())
+}
+
+/// The single-process TUI: this process owns the player and the terminal.
+#[cfg(not(unix))]
+async fn run_here() -> anyhow::Result<()> {
     // Fails before touching the terminal if there is no audio device.
     let (rt, inputs, state, state_rx) = start(setup()?).await?;
-    #[cfg(unix)]
-    let _socket = host.map(|(h, guard)| {
-        tokio::spawn(h.serve(state_rx, rt.tx.clone()));
-        guard
-    });
-    #[cfg(not(unix))]
     drop(state_rx);
 
     let theme = Theme::detect();
