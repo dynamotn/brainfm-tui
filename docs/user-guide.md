@@ -272,10 +272,20 @@ together leave nothing to play. Allow more genres or levels.
 
 **"Terminal too small"**: make the window at least 60 by 20.
 
-**No sound, or the wrong device**: check the sound system with
-`BRAINFM_AUDIO_HOST=alsa brainfm` and with `pulse`, and see which one the log
-reports. On a desktop with neither PulseAudio nor PipeWire, only ALSA is
+**No sound, or the wrong device**: run `brainfm stop`, then check the sound
+system with `BRAINFM_AUDIO_HOST=alsa brainfm` and with `pulse`, and see which
+one the log reports. On a desktop with neither PulseAudio nor PipeWire, only ALSA is
 available.
+
+**An environment variable has no effect**: the background player reads
+`BRAINFM_AUDIO_HOST` and the rest of its environment once, when it starts,
+not each time a window opens. Run `brainfm stop`, then start `brainfm` again
+with the new value.
+
+**"brainfm daemon did not start"**: the background player failed while
+starting, for example because there is no audio device or the audio host is
+unknown. The message quotes the reason when it can; the full error is in
+`brainfm.log` in the state directory.
 
 **Symbols show as boxes**: set `BRAINFM_ASCII=1` to use plain characters.
 

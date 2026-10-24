@@ -532,9 +532,8 @@ async fn run_view() -> anyhow::Result<()> {
         let session = match crate::share::attach(&path).await? {
             crate::share::Attach::Session(c) => c,
             crate::share::Attach::Busy(reason) => anyhow::bail!("{reason}"),
-            crate::share::Attach::NotResponding => {
-                anyhow::bail!("{}", crate::share::NOT_RESPONDING)
-            }
+            // It may still be starting up, e.g. another TUI just spawned it.
+            crate::share::Attach::NotResponding => spawn::wait_for_host(&path).await?,
             crate::share::Attach::NoHost => spawn::start_daemon(&path).await?,
         };
         view::run(session, &mut terminal, &theme, &store, &client).await
