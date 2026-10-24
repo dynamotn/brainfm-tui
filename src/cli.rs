@@ -240,7 +240,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                     eprintln!("warning: {r}; the running player keeps going until it exits");
                 }
                 Ok(_) => {}
-                Err(e) => tracing::warn!("cannot stop the running player: {e:#}"),
+                Err(e) => {
+                    eprintln!("warning: {e:#}; the running player keeps going until it exits");
+                }
             }
             store.clear()?;
             println!("Logged out");
