@@ -268,8 +268,12 @@ async fn claim_session() -> anyhow::Result<Option<crate::share::SocketGuard>> {
         Attach::Busy(reason) => bail!("{reason}"),
         Attach::NoHost => match Host::bind(&path) {
             Ok(host) => {
+                // Wiring `brainfm stop` to end `play` comes later; for now the
+                // receiver is dropped, so a Stop is ignored.
+                let (stop, _) = tokio::sync::mpsc::unbounded_channel();
                 tokio::spawn(host.refuse(
                     "`brainfm play` is running in another terminal; stop it there first (Ctrl-C)",
+                    stop,
                 ));
                 Ok(Some(SocketGuard(path)))
             }

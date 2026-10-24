@@ -189,7 +189,7 @@ impl ApiClient {
         self.token.lock().expect("token lock").clone()
     }
 
-    fn set_token(&self, token: &str) {
+    pub(crate) fn set_token(&self, token: &str) {
         *self.token.lock().expect("token lock") = Some(token.to_owned());
     }
 

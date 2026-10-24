@@ -81,6 +81,12 @@ pub enum Action {
     Player(PlayerEvent),
     Api(ApiReply),
     Media(MediaKey),
+    /// A view or `brainfm stop` asked the host to quit.
+    Shutdown,
+    /// A view logged in again: reload the stored session.
+    ReloadSession,
+    /// How many views are attached right now.
+    Views(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,7 +122,11 @@ pub fn update(s: &mut AppState, action: Action) -> Vec<Effect> {
         Action::RemoteKey(k) if k.kind != KeyEventKind::Release && !is_quit_key(s, &k) => {
             on_key(s, k, &mut fx);
         }
-        Action::Key(_) | Action::RemoteKey(_) => {}
+        Action::Key(_)
+        | Action::RemoteKey(_)
+        | Action::Shutdown
+        | Action::ReloadSession
+        | Action::Views(_) => {}
         Action::Tick(dt) => on_tick(s, dt, &mut fx),
         Action::Player(e) => on_player(s, e, &mut fx),
         Action::Api(r) => on_api(s, r, &mut fx),

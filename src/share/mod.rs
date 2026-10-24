@@ -10,6 +10,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crossterm::event::KeyEvent;
@@ -27,12 +29,23 @@ pub(crate) use crate::app::update::is_quit_key as is_local_quit;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long a new view waits for the host's first state or answer.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long `request_stop` waits for the host to go away.
+#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+const STOP_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "t")]
 enum ToHost {
-    Hello { version: String },
-    Key { key: KeyEvent },
+    Hello {
+        version: String,
+    },
+    Key {
+        key: KeyEvent,
+    },
+    /// Frozen wire shape: `{"t":"Stop"}` is valid as the first line of a
+    /// connection, with no `Hello` and no version check.
+    Stop,
+    Reload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -97,27 +110,47 @@ impl Host {
         states: watch::Receiver<String>,
         actions: UnboundedSender<Action>,
     ) {
+        let views = Arc::new(AtomicUsize::new(0));
         loop {
             match self.listener.accept().await {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve_view(stream, states.clone(), actions.clone()));
+                    tokio::spawn(serve_view(
+                        stream,
+                        states.clone(),
+                        actions.clone(),
+                        views.clone(),
+                    ));
                 }
                 Err(e) => tracing::warn!("accepting a view: {e}"),
             }
         }
     }
 
-    /// Answers every view with `Busy(reason)` (used by `brainfm play`).
-    pub(crate) async fn refuse(self, reason: impl Into<String>) {
-        let reply = line(&ToClient::Busy {
+    /// Answers every view with `Busy(reason)` (used by `brainfm play`),
+    /// except a `Stop`, which is forwarded on `stop`.
+    pub(crate) async fn refuse(self, reason: impl Into<String>, stop: UnboundedSender<()>) {
+        let reply: Arc<str> = line(&ToClient::Busy {
             reason: reason.into(),
-        });
+        })
+        .into();
         loop {
-            if let Ok((mut stream, _)) = self.listener.accept().await {
-                let _ = stream.write_all(reply.as_bytes()).await;
+            if let Ok((stream, _)) = self.listener.accept().await {
+                tokio::spawn(refuse_one(stream, reply.clone(), stop.clone()));
             }
         }
     }
+}
+
+async fn refuse_one(stream: UnixStream, reply: Arc<str>, stop: UnboundedSender<()>) {
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    if let Ok(Ok(Some(l))) = tokio::time::timeout(HELLO_TIMEOUT, lines.next_line()).await
+        && matches!(serde_json::from_str::<ToHost>(&l), Ok(ToHost::Stop))
+    {
+        let _ = stop.send(());
+        return;
+    }
+    let _ = write.write_all(reply.as_bytes()).await;
 }
 
 fn state_line(json: &str) -> String {
@@ -129,6 +162,7 @@ async fn serve_view(
     stream: UnixStream,
     mut states: watch::Receiver<String>,
     actions: UnboundedSender<Action>,
+    views: Arc<AtomicUsize>,
 ) {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -136,16 +170,23 @@ async fn serve_view(
         Ok(Ok(Some(l))) => match serde_json::from_str::<ToHost>(&l) {
             Ok(ToHost::Hello { version }) if version == VERSION => {}
             Ok(ToHost::Hello { version }) => {
-                let reason = format!("brainfm {VERSION} is running; this is {version}");
+                let reason = format!(
+                    "brainfm {VERSION} is running; this is {version}. Run `brainfm stop` first"
+                );
                 let _ = write
                     .write_all(line(&ToClient::Busy { reason }).as_bytes())
                     .await;
+                return;
+            }
+            Ok(ToHost::Stop) => {
+                let _ = actions.send(Action::Shutdown);
                 return;
             }
             _ => return,
         },
         _ => return,
     }
+    let _ = actions.send(Action::Views(views.fetch_add(1, Ordering::SeqCst) + 1));
     let writer = tokio::spawn(async move {
         loop {
             let json = states.borrow_and_update().clone();
@@ -158,13 +199,18 @@ async fn serve_view(
         }
     });
     while let Ok(Some(l)) = lines.next_line().await {
-        if let Ok(ToHost::Key { key }) = serde_json::from_str(&l)
-            && actions.send(Action::RemoteKey(key)).is_err()
-        {
+        let action = match serde_json::from_str(&l) {
+            Ok(ToHost::Key { key }) => Action::RemoteKey(key),
+            Ok(ToHost::Stop) => Action::Shutdown,
+            Ok(ToHost::Reload) => Action::ReloadSession,
+            _ => continue,
+        };
+        if actions.send(action).is_err() {
             break;
         }
     }
     writer.abort();
+    let _ = actions.send(Action::Views(views.fetch_sub(1, Ordering::SeqCst) - 1));
 }
 
 /// What a new TUI finds at the socket.
@@ -284,6 +330,74 @@ async fn send_key(write: &mut OwnedWriteHalf, key: KeyEvent) -> io::Result<()> {
     write.write_all(line(&ToHost::Key { key }).as_bytes()).await
 }
 
+/// What `brainfm stop` found.
+#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StopOutcome {
+    NothingRunning,
+    Stopped,
+    NoAnswer(String),
+}
+
+/// Connects to `path`; `None` when nothing is listening (a stale socket
+/// file is removed).
+#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+async fn connect_live(path: &Path) -> io::Result<Option<UnixStream>> {
+    match UnixStream::connect(path).await {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            let _ = std::fs::remove_file(path);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Asks the host at `path` to stop and waits until its socket is gone.
+#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+pub(crate) async fn request_stop(path: &Path) -> io::Result<StopOutcome> {
+    let Some(mut stream) = connect_live(path).await? else {
+        return Ok(StopOutcome::NothingRunning);
+    };
+    stream.write_all(line(&ToHost::Stop).as_bytes()).await?;
+    drop(stream);
+    let wait = async {
+        while UnixStream::connect(path).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    Ok(match tokio::time::timeout(STOP_WAIT, wait).await {
+        Ok(()) => StopOutcome::Stopped,
+        Err(_) => StopOutcome::NoAnswer("brainfm did not stop within 5 s".into()),
+    })
+}
+
+/// Asks a live host to reload its session; `false` when nothing runs or it
+/// turned the request away.
+#[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+pub(crate) async fn request_reload(path: &Path) -> io::Result<bool> {
+    let Some(stream) = connect_live(path).await? else {
+        return Ok(false);
+    };
+    let (read, mut write) = stream.into_split();
+    let hello = line(&ToHost::Hello {
+        version: VERSION.to_owned(),
+    });
+    write.write_all(hello.as_bytes()).await?;
+    write.write_all(line(&ToHost::Reload).as_bytes()).await?;
+    let mut lines = BufReader::new(read).lines();
+    let answer = tokio::time::timeout(HELLO_TIMEOUT, lines.next_line()).await;
+    Ok(matches!(
+        answer
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .and_then(|l| serde_json::from_str::<ToClient>(&l).ok()),
+        Some(ToClient::State { .. })
+    ))
+}
+
 /// The writing half of an attached view.
 #[derive(Debug)]
 pub(crate) struct KeySender(OwnedWriteHalf);
@@ -291,6 +405,18 @@ pub(crate) struct KeySender(OwnedWriteHalf);
 impl KeySender {
     pub(crate) async fn send(&mut self, key: KeyEvent) -> io::Result<()> {
         send_key(&mut self.0, key).await
+    }
+
+    /// Asks the host to shut down.
+    #[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+    pub(crate) async fn stop(&mut self) -> io::Result<()> {
+        self.0.write_all(line(&ToHost::Stop).as_bytes()).await
+    }
+
+    /// Asks the host to reload its session.
+    #[allow(dead_code, reason = "consumed by the daemon and CLI tasks")]
+    pub(crate) async fn reload(&mut self) -> io::Result<()> {
+        self.0.write_all(line(&ToHost::Reload).as_bytes()).await
     }
 }
 
