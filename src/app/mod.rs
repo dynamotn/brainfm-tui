@@ -521,7 +521,8 @@ async fn run_view() -> anyhow::Result<()> {
     let theme = Theme::detect();
     let mut terminal = ratatui::init();
     let result = async {
-        if state.user_id.is_none() {
+        let logged_in_here = state.user_id.is_none();
+        if logged_in_here {
             // Nobody else can log in for this window before it attaches.
             let (_, never) = tokio::sync::watch::channel(false);
             let outcome = login::run(&mut terminal, &theme, &store, &client, false, never).await?;
@@ -530,14 +531,20 @@ async fn run_view() -> anyhow::Result<()> {
             }
         }
         let path = crate::share::socket_path()?;
+        // A daemon that was already running still holds the old session.
+        let mut reload = logged_in_here;
         let session = match crate::share::attach(&path).await? {
             crate::share::Attach::Session(c) => c,
             crate::share::Attach::Busy(reason) => anyhow::bail!("{reason}"),
             // It may still be starting up, e.g. another TUI just spawned it.
             crate::share::Attach::NotResponding => spawn::wait_for_host(&path).await?,
-            crate::share::Attach::NoHost => spawn::start_daemon(&path).await?,
+            crate::share::Attach::NoHost => {
+                // It reads the new session as it starts.
+                reload = false;
+                spawn::start_daemon(&path).await?
+            }
         };
-        view::run(session, &mut terminal, &theme, &store, &client).await
+        view::run(session, reload, &mut terminal, &theme, &store, &client).await
     }
     .await;
     ratatui::restore();

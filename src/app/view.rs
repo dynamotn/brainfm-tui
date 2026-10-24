@@ -35,8 +35,10 @@ fn is_capital(k: &KeyEvent, c: char) -> bool {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
+/// `reload` asks the daemon to pick up a session this window just stored.
 pub(super) async fn run(
     client: Box<Client>,
+    reload: bool,
     terminal: &mut DefaultTerminal,
     theme: &Theme,
     store: &SessionStore,
@@ -46,6 +48,9 @@ pub(super) async fn run(
     let Some(mut state) = first else {
         anyhow::bail!("The background player stopped.");
     };
+    if reload && keys.reload().await.is_err() {
+        return Ok(Ended::HostGone);
+    }
     let mut events = EventStream::new();
     let mut stopping = false;
     let gone = |stopping: bool| {
