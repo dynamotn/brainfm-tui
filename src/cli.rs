@@ -37,6 +37,8 @@ pub enum Command {
     },
     /// Play a mental state without the TUI
     Play(PlayArgs),
+    /// Stop the music and the background player
+    Stop,
     /// Host the session in the background for TUIs to attach to
     #[cfg(unix)]
     #[command(hide = true)]
@@ -156,6 +158,8 @@ async fn login(store: &SessionStore, paste_token: bool) -> anyhow::Result<()> {
         client.email_login(&email, &password).await?
     };
     store.save(&token)?;
+    #[cfg(unix)]
+    reload_running_player().await;
     let (client, _) = client_from_store(store)?;
     let me = client.me().await?;
     println!(
@@ -163,6 +167,26 @@ async fn login(store: &SessionStore, paste_token: bool) -> anyhow::Result<()> {
         me.email.as_deref().unwrap_or("(unknown email)")
     );
     Ok(())
+}
+
+/// Tells a running background player to pick up the session just stored.
+#[cfg(unix)]
+async fn reload_running_player() {
+    use crate::share::{request_reload, socket_path};
+    let result = match socket_path() {
+        Ok(path) => request_reload(&path).await.map_err(anyhow::Error::from),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        tracing::warn!("cannot tell the running player about the new session: {e:#}");
+    }
+}
+
+/// Ends the running player, if any. Silent when nothing runs.
+#[cfg(unix)]
+async fn stop_running_player() -> anyhow::Result<crate::share::StopOutcome> {
+    use crate::share::{request_stop, socket_path};
+    Ok(request_stop(&socket_path()?).await?)
 }
 
 async fn whoami(store: &SessionStore) -> anyhow::Result<()> {
@@ -210,6 +234,14 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
     match cmd {
         Command::Login { token } => login(&store, token).await,
         Command::Logout => {
+            #[cfg(unix)]
+            match stop_running_player().await {
+                Ok(crate::share::StopOutcome::NoAnswer(r)) => {
+                    eprintln!("warning: {r}; the running player keeps going until it exits");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("cannot stop the running player: {e:#}"),
+            }
             store.clear()?;
             println!("Logged out");
             Ok(())
@@ -217,6 +249,13 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         Command::Whoami => whoami(&store).await,
         Command::List { what, state } => list(&store, what, state).await,
         Command::Play(args) => crate::headless::play(&store, args).await,
+        #[cfg(unix)]
+        Command::Stop => match stop_running_player().await? {
+            crate::share::StopOutcome::NoAnswer(r) => bail!(r),
+            _ => Ok(()),
+        },
+        #[cfg(not(unix))]
+        Command::Stop => Ok(()),
         #[cfg(unix)]
         Command::Daemon => crate::app::daemon::run().await,
     }

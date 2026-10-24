@@ -29,10 +29,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long a new view waits for the host's first state or answer.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long `request_stop` waits for the host to go away.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-)]
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -364,10 +360,6 @@ async fn send_key(write: &mut OwnedWriteHalf, key: KeyEvent) -> io::Result<()> {
 }
 
 /// What `brainfm stop` found.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StopOutcome {
     NothingRunning,
@@ -377,10 +369,6 @@ pub(crate) enum StopOutcome {
 
 /// Connects to `path`; `None` when nothing is listening (a stale socket
 /// file is removed).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-)]
 async fn connect_live(path: &Path) -> io::Result<Option<UnixStream>> {
     match UnixStream::connect(path).await {
         Ok(s) => Ok(Some(s)),
@@ -394,10 +382,6 @@ async fn connect_live(path: &Path) -> io::Result<Option<UnixStream>> {
 }
 
 /// Asks the host at `path` to stop and waits until its socket is gone.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-)]
 pub(crate) async fn request_stop(path: &Path) -> io::Result<StopOutcome> {
     let Some(mut stream) = connect_live(path).await? else {
         return Ok(StopOutcome::NothingRunning);
@@ -417,10 +401,6 @@ pub(crate) async fn request_stop(path: &Path) -> io::Result<StopOutcome> {
 
 /// Asks a live host to reload its session; `false` when nothing runs or it
 /// turned the request away.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the daemon and CLI tasks")
-)]
 pub(crate) async fn request_reload(path: &Path) -> io::Result<bool> {
     let Some(stream) = connect_live(path).await? else {
         return Ok(false);

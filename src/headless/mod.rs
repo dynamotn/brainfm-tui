@@ -136,7 +136,9 @@ fn timer_mode(args: &PlayArgs) -> anyhow::Result<TimerMode> {
 
 pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
-    let _socket = claim_session().await?;
+    let (_socket, mut stop_requests) = claim_session().await?;
+    #[cfg(not(unix))]
+    let mut stop_requests = tokio::sync::mpsc::unbounded_channel::<()>().1;
     let (client, session) = client_from_store(store)?;
     let config = Config::load(&Config::default_path()?)?;
     let req = resolve_request(&client, &config, &args).await?;
@@ -181,6 +183,7 @@ pub(crate) async fn play(store: &SessionStore, args: PlayArgs) -> anyhow::Result
         }
         pending = tokio::select! {
             _ = tokio::signal::ctrl_c() => vec![Cmd::Stop { fade: machine::QUIT_FADE }],
+            Some(()) = stop_requests.recv() => vec![Cmd::Stop { fade: machine::QUIT_FADE }],
             Some(ev) = events.recv() => {
                 let pos_report = matches!(ev, PlayerEvent::Position { .. });
                 let cmds = m.on_player(ev);
@@ -256,11 +259,16 @@ impl Fetcher {
 }
 
 /// Holds the shared-session socket so a TUI opened meanwhile explains why it
-/// cannot start, instead of playing a second stream.
+/// cannot start, instead of playing a second stream. A `brainfm stop` arrives
+/// on the returned receiver.
 #[cfg(unix)]
-async fn claim_session() -> anyhow::Result<Option<crate::share::SocketGuard>> {
+async fn claim_session() -> anyhow::Result<(
+    Option<crate::share::SocketGuard>,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+)> {
     use crate::share::{Attach, Host, SocketGuard, attach, socket_path};
     let path = socket_path()?;
+    let (stop, stop_requests) = tokio::sync::mpsc::unbounded_channel();
     match attach(&path).await? {
         Attach::Session(_) => {
             bail!("A brainfm TUI is already playing; control it there, or quit it first")
@@ -269,18 +277,15 @@ async fn claim_session() -> anyhow::Result<Option<crate::share::SocketGuard>> {
         Attach::NotResponding => bail!("{}", crate::share::NOT_RESPONDING),
         Attach::NoHost => match Host::bind(&path) {
             Ok(host) => {
-                // Wiring `brainfm stop` to end `play` comes later; for now the
-                // receiver is dropped, so a Stop is ignored.
-                let (stop, _) = tokio::sync::mpsc::unbounded_channel();
                 tokio::spawn(host.refuse(
                     "`brainfm play` is running in another terminal; stop it there first (Ctrl-C)",
                     stop,
                 ));
-                Ok(Some(SocketGuard(path)))
+                Ok((Some(SocketGuard(path)), stop_requests))
             }
             Err(e) => {
                 tracing::warn!("cannot claim the session socket: {e}");
-                Ok(None)
+                Ok((None, stop_requests))
             }
         },
     }
