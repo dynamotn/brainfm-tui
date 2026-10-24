@@ -258,11 +258,12 @@ impl Fetcher {
     }
 }
 
-/// Whether `brainfm play` may stop the daemon it found: only when the
-/// daemon is not playing, so music someone is listening to is never cut.
+/// Whether `brainfm play` may stop the daemon it found: only when it is
+/// idle by the daemon's own rule, neither playing nor running a timer, so a
+/// session in an interval break or between tracks is never cut.
 #[cfg(unix)]
 fn takeover(state: &crate::app::state::AppState) -> bool {
-    state.playback != crate::app::state::Playback::Playing
+    state.playback != crate::app::state::Playback::Playing && !state.timer.is_running()
 }
 
 /// Holds the shared-session socket so a TUI opened meanwhile explains why it
@@ -430,16 +431,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn play_takes_over_only_a_daemon_that_is_not_playing() {
+    fn play_takes_over_only_an_idle_daemon() {
         use crate::app::state::{AppState, Playback};
         let mut s = AppState::new(crate::config::Config::default(), true, Some("u".into()));
-        for (playback, expected) in [
-            (Playback::Playing, false),
-            (Playback::Paused, true),
-            (Playback::Idle, true),
+        for (playback, timer_running, expected) in [
+            (Playback::Playing, true, false),
+            (Playback::Playing, false, false),
+            // An interval break: paused while the timer keeps running.
+            (Playback::Paused, true, false),
+            // Between tracks during a skip.
+            (Playback::Loading, true, false),
+            // A user pause also pauses the timer.
+            (Playback::Paused, false, true),
+            (Playback::Idle, false, true),
         ] {
             s.playback = playback;
-            assert_eq!(takeover(&s), expected, "{playback:?}");
+            if timer_running {
+                s.timer.start();
+            } else {
+                s.timer.pause();
+            }
+            assert_eq!(s.timer.is_running(), timer_running);
+            assert_eq!(
+                takeover(&s),
+                expected,
+                "{playback:?}, timer running: {timer_running}"
+            );
         }
     }
 
