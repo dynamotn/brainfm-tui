@@ -304,6 +304,11 @@ impl Client {
         serde_json::from_str(&l).map(Some).map_err(io::Error::other)
     }
 
+    /// The state the host sent on attaching, until [`Client::split`].
+    pub(crate) fn first_state(&self) -> Option<&AppState> {
+        self.first.as_ref()
+    }
+
     /// The next state from the host; `None` once the host is gone.
     #[cfg(test)]
     pub(crate) async fn next_state(&mut self) -> io::Result<Option<AppState>> {

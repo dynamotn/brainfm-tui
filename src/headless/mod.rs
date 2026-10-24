@@ -258,36 +258,57 @@ impl Fetcher {
     }
 }
 
+/// Whether `brainfm play` may stop the daemon it found: only when the
+/// daemon is not playing, so music someone is listening to is never cut.
+#[cfg(unix)]
+fn takeover(state: &crate::app::state::AppState) -> bool {
+    state.playback != crate::app::state::Playback::Playing
+}
+
 /// Holds the shared-session socket so a TUI opened meanwhile explains why it
-/// cannot start, instead of playing a second stream. A `brainfm stop` arrives
-/// on the returned receiver.
+/// cannot start, instead of playing a second stream. An idle daemon is
+/// stopped first. A `brainfm stop` arrives on the returned receiver.
 #[cfg(unix)]
 async fn claim_session() -> anyhow::Result<(
     Option<crate::share::SocketGuard>,
     tokio::sync::mpsc::UnboundedReceiver<()>,
 )> {
-    use crate::share::{Attach, Host, SocketGuard, attach, socket_path};
+    use crate::share::{Attach, Host, SocketGuard, StopOutcome, attach, request_stop, socket_path};
     let path = socket_path()?;
     let (stop, stop_requests) = tokio::sync::mpsc::unbounded_channel();
-    match attach(&path).await? {
-        Attach::Session(_) => {
-            bail!("A brainfm TUI is already playing; control it there, or quit it first")
+    let mut stopped_idle = false;
+    loop {
+        match attach(&path).await? {
+            Attach::Session(client) => {
+                if stopped_idle || !client.first_state().is_some_and(takeover) {
+                    bail!(
+                        "brainfm is already playing in the background; control it from the TUI, or run `brainfm stop` first"
+                    );
+                }
+                drop(client);
+                if let StopOutcome::NoAnswer(reason) = request_stop(&path).await? {
+                    bail!("{reason}");
+                }
+                stopped_idle = true;
+            }
+            Attach::Busy(reason) => bail!("{reason}"),
+            Attach::NotResponding => bail!("{}", crate::share::NOT_RESPONDING),
+            Attach::NoHost => {
+                return match Host::bind(&path) {
+                    Ok(host) => {
+                        tokio::spawn(host.refuse(
+                            "`brainfm play` is running in another terminal; stop it there (Ctrl-C) or run `brainfm stop`",
+                            stop,
+                        ));
+                        Ok((Some(SocketGuard(path)), stop_requests))
+                    }
+                    Err(e) => {
+                        tracing::warn!("cannot claim the session socket: {e}");
+                        Ok((None, stop_requests))
+                    }
+                };
+            }
         }
-        Attach::Busy(reason) => bail!("{reason}"),
-        Attach::NotResponding => bail!("{}", crate::share::NOT_RESPONDING),
-        Attach::NoHost => match Host::bind(&path) {
-            Ok(host) => {
-                tokio::spawn(host.refuse(
-                    "`brainfm play` is running in another terminal; stop it there first (Ctrl-C)",
-                    stop,
-                ));
-                Ok((Some(SocketGuard(path)), stop_requests))
-            }
-            Err(e) => {
-                tracing::warn!("cannot claim the session socket: {e}");
-                Ok((None, stop_requests))
-            }
-        },
     }
 }
 
@@ -406,6 +427,21 @@ mod tests {
     }
     use crate::api::EffectLevel;
     use crate::config::StatePrefs;
+
+    #[cfg(unix)]
+    #[test]
+    fn play_takes_over_only_a_daemon_that_is_not_playing() {
+        use crate::app::state::{AppState, Playback};
+        let mut s = AppState::new(crate::config::Config::default(), true, Some("u".into()));
+        for (playback, expected) in [
+            (Playback::Playing, false),
+            (Playback::Paused, true),
+            (Playback::Idle, true),
+        ] {
+            s.playback = playback;
+            assert_eq!(takeover(&s), expected, "{playback:?}");
+        }
+    }
 
     #[test]
     fn flags_override_prefs() {

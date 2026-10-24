@@ -181,7 +181,10 @@ first.
 
 Windows find the daemon through a socket in `$XDG_RUNTIME_DIR/brainfm/`. A
 `brainfm play` session holds it too, so the TUI and the command line never
-play at the same time; whichever starts second explains why it cannot. The
+play at the same time. `brainfm play` stops a daemon that is paused or idle
+and takes its place; while the daemon is playing, it refuses and asks you to
+run `brainfm stop` first. A TUI started during `brainfm play` explains why it
+cannot open. The
 daemon and `brainfm stop` need Unix; elsewhere the TUI plays in its own
 process and stops when you quit. If the daemon fails to start or stops
 unexpectedly, the reason is in the log.
