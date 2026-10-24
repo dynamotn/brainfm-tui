@@ -12,9 +12,11 @@ use crate::timer::{Phase, Timer, TimerEvent};
 
 const MAX_ERRORS_IN_A_ROW: u32 = 3;
 const END_FADE: Duration = Duration::from_secs(3);
-const QUIT_FADE: Duration = Duration::from_millis(500);
+pub(crate) const QUIT_FADE: Duration = Duration::from_millis(500);
 const VOLUME_STEP: u8 = 10;
 const LOADING_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the daemon lingers with nothing playing and no view attached.
+pub(crate) const IDLE_EXIT: Duration = Duration::from_secs(600);
 
 pub use crate::media::MediaKey;
 
@@ -113,6 +115,8 @@ pub enum Effect {
         password: Secret,
     },
     SaveConfig,
+    /// Re-read the stored session after a view logged in again.
+    ReloadSession,
 }
 
 pub fn update(s: &mut AppState, action: Action) -> Vec<Effect> {
@@ -122,11 +126,15 @@ pub fn update(s: &mut AppState, action: Action) -> Vec<Effect> {
         Action::RemoteKey(k) if k.kind != KeyEventKind::Release && !is_quit_key(s, &k) => {
             on_key(s, k, &mut fx);
         }
-        Action::Key(_)
-        | Action::RemoteKey(_)
-        | Action::Shutdown
-        | Action::ReloadSession
-        | Action::Views(_) => {}
+        Action::Key(_) | Action::RemoteKey(_) => {}
+        Action::Shutdown => quit(s, &mut fx),
+        Action::ReloadSession => fx.push(Effect::ReloadSession),
+        Action::Views(n) => {
+            s.views = n;
+            if n > 0 {
+                s.idle_for = Duration::ZERO;
+            }
+        }
         Action::Tick(dt) => on_tick(s, dt, &mut fx),
         Action::Player(e) => on_player(s, e, &mut fx),
         Action::Api(r) => on_api(s, r, &mut fx),
@@ -546,6 +554,21 @@ fn on_tick(s: &mut AppState, dt: Duration, fx: &mut Vec<Effect>) {
         }
         None => {}
     }
+    track_idle(s, dt, fx);
+}
+
+/// The daemon exits once nothing plays, no break is pending and no view is
+/// attached for `IDLE_EXIT`. A single-process TUI never idles out.
+fn track_idle(s: &mut AppState, dt: Duration, fx: &mut Vec<Effect>) {
+    let idle = s.views == 0 && s.playback != Playback::Playing && !s.timer.is_running();
+    if !idle {
+        s.idle_for = Duration::ZERO;
+        return;
+    }
+    s.idle_for += dt;
+    if !s.login_here && s.idle_for >= IDLE_EXIT {
+        quit(s, fx);
+    }
 }
 
 fn on_player(s: &mut AppState, e: PlayerEvent, fx: &mut Vec<Effect>) {
@@ -672,6 +695,7 @@ fn on_api(s: &mut AppState, r: ApiReply, fx: &mut Vec<Effect>) {
         }
         ApiReply::LoggedIn { user_id } => {
             s.user_id = Some(user_id);
+            s.needs_login = false;
             s.overlay = None;
             fx.push(Effect::FetchStates);
             fx.push(Effect::FetchLibrary);
@@ -711,6 +735,10 @@ fn on_failed(s: &mut AppState, what: &'static str, error: ApiErrorKind, fx: &mut
                 s.playback = Playback::Paused;
             }
             let message = (what == "login").then(|| "Wrong email or password".to_owned());
+            if !s.login_here {
+                s.needs_login = true;
+                return;
+            }
             match &mut s.overlay {
                 Some(Overlay::Login { error, .. }) => {
                     *error = message.or(Some("Session expired — log in again".into()));

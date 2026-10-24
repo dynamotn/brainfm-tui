@@ -956,3 +956,130 @@ fn remote_keys_drive_the_session_but_cannot_quit_it() {
     );
     assert!(!s.quit);
 }
+
+fn daemon(mut s: AppState) -> AppState {
+    s.login_here = false;
+    s
+}
+
+#[test]
+fn shutdown_fades_and_quits() {
+    let mut s = playing();
+    let fx = update(&mut s, Action::Shutdown);
+    assert!(s.quit);
+    assert!(fx.contains(&Effect::Player(PlayerCommand::Stop { fade: QUIT_FADE })));
+}
+
+#[test]
+fn unauthorized_in_daemon_sets_banner_not_form() {
+    let mut s = daemon(playing());
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::Failed {
+            what: "session",
+            error: ApiErrorKind::Unauthorized,
+        }),
+    );
+    assert!(s.needs_login);
+    assert!(s.overlay.is_none());
+    assert!(fx.contains(&Effect::Player(PlayerCommand::Pause)));
+    assert_eq!(s.playback, Playback::Paused);
+}
+
+#[test]
+fn reload_session_asks_runtime() {
+    let mut s = playing();
+    assert_eq!(
+        update(&mut s, Action::ReloadSession),
+        [Effect::ReloadSession]
+    );
+}
+
+#[test]
+fn logged_in_clears_banner() {
+    let mut s = daemon(playing());
+    s.needs_login = true;
+    let fx = update(
+        &mut s,
+        Action::Api(ApiReply::LoggedIn {
+            user_id: "u1".into(),
+        }),
+    );
+    assert!(!s.needs_login);
+    assert!(fx.contains(&Effect::FetchStates));
+    assert!(fx.contains(&Effect::FetchLibrary));
+}
+
+#[test]
+fn second_logged_in_is_harmless() {
+    let mut s = daemon(playing());
+    s.needs_login = true;
+    for _ in 0..2 {
+        update(
+            &mut s,
+            Action::Api(ApiReply::LoggedIn {
+                user_id: "u1".into(),
+            }),
+        );
+    }
+    assert!(!s.needs_login);
+    assert!(s.overlay.is_none());
+}
+
+#[test]
+fn idle_exit_after_ten_minutes_without_views() {
+    let mut s = daemon(ready());
+    update(&mut s, Action::Views(0));
+    update(&mut s, Action::Tick(Duration::from_secs(599)));
+    assert!(!s.quit);
+    update(&mut s, Action::Tick(Duration::from_secs(1)));
+    assert!(s.quit);
+}
+
+#[test]
+fn idle_clock_resets_on_view_or_play() {
+    let mut s = daemon(ready());
+    update(&mut s, Action::Tick(Duration::from_secs(540)));
+    assert_eq!(s.idle_for, Duration::from_secs(540));
+    update(&mut s, Action::Views(1));
+    assert_eq!(s.idle_for, Duration::ZERO);
+
+    let mut s = daemon(ready());
+    let a = reply(&s, Intent::Now, vec![serving("a")]);
+    update(&mut s, a);
+    // Short of the loading timeout, which would drop the pending track.
+    update(&mut s, Action::Tick(Duration::from_secs(25)));
+    assert_eq!(s.idle_for, Duration::from_secs(25));
+    update(
+        &mut s,
+        Action::Player(PlayerEvent::Started { id: "a".into() }),
+    );
+    update(&mut s, Action::Tick(Duration::from_secs(1)));
+    assert_eq!(s.idle_for, Duration::ZERO);
+}
+
+#[test]
+fn no_idle_exit_while_playing_or_in_break() {
+    let mut s = daemon(playing());
+    update(&mut s, Action::Views(0));
+    update(&mut s, Action::Tick(IDLE_EXIT * 2));
+    assert!(!s.quit);
+
+    let mut s = daemon(playing());
+    s.timer = Timer::new(TimerMode::Intervals {
+        focus: Duration::from_mins(25),
+        rest: Duration::from_mins(5),
+    });
+    s.timer.start();
+    s.playback = Playback::Paused;
+    update(&mut s, Action::Views(0));
+    update(&mut s, Action::Tick(IDLE_EXIT * 2));
+    assert!(!s.quit);
+}
+
+#[test]
+fn single_process_tui_never_idles_out() {
+    let mut s = ready();
+    update(&mut s, Action::Tick(IDLE_EXIT * 2));
+    assert!(!s.quit);
+}

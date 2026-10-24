@@ -109,6 +109,10 @@ impl Toast {
 
 /// Everything a view needs to draw; sent whole to attached TUIs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "plain flags the reducer toggles independently"
+)]
 pub struct AppState {
     pub states: Vec<MentalState>,
     pub state_idx: usize,
@@ -141,6 +145,16 @@ pub struct AppState {
     pub resume_to: Playback,
     pub loading_for: Duration,
     pub quit: bool,
+    /// The login session expired and a view must log in again (daemon only).
+    pub needs_login: bool,
+    /// True when this process shows its own login form; the daemon sets it false.
+    pub login_here: bool,
+    /// Attached views; not sent to them.
+    #[serde(skip)]
+    pub views: usize,
+    /// How long nothing has played and no view was attached; not sent to views.
+    #[serde(skip)]
+    pub idle_for: Duration,
 }
 
 impl AppState {
@@ -181,6 +195,10 @@ impl AppState {
             resume_to: Playback::Idle,
             loading_for: Duration::ZERO,
             quit: false,
+            needs_login: false,
+            login_here: true,
+            views: 0,
+            idle_for: Duration::ZERO,
         }
     }
 

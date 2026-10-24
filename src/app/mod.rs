@@ -173,6 +173,8 @@ impl Runtime {
             Effect::SaveConfig => {
                 self.config_writer.send_replace(Some(s.config.clone()));
             }
+            // Executed by the daemon host, not here.
+            Effect::ReloadSession => {}
         }
     }
 }
