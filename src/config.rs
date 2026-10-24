@@ -111,7 +111,8 @@ impl Config {
 pub(crate) const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Writes the latest `Some(config)` sent to the returned channel once
-/// changes have paused for `debounce`. Writing happens off the async runtime.
+/// changes have paused for `debounce`, or at once when the sender is
+/// dropped. Writing happens off the async runtime.
 pub(crate) fn spawn_writer(
     path: PathBuf,
     debounce: Duration,
@@ -210,6 +211,22 @@ mod tests {
         assert!(!path.exists(), "nothing written during the burst");
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(Config::load(&path).unwrap().volume, 50);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_writer_flushes_a_pending_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let writer = spawn_writer(path.clone(), Duration::from_secs(60));
+        writer.send_replace(Some(Config {
+            volume: 33,
+            ..Config::default()
+        }));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!path.exists(), "still debouncing");
+        drop(writer);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(Config::load(&path).unwrap().volume, 33);
     }
 
     #[test]

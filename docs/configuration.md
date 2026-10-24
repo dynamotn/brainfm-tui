@@ -64,6 +64,10 @@ dragging a volume slider does not rewrite the file over and over. Each write
 goes to a temporary file that is then renamed into place, so the file is never
 left half written, even with several brainfm processes running.
 
+brainfm keeps running in the background; run `brainfm stop` before editing
+config.toml by hand, or your edit may be overwritten by the next change made
+in the TUI.
+
 ## Environment variables
 
 | Variable | Effect |

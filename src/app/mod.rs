@@ -64,7 +64,6 @@ struct Runtime {
     player: PlayerHandle,
     tx: UnboundedSender<Action>,
     config_writer: watch::Sender<Option<Config>>,
-    config_path: PathBuf,
 }
 
 impl Runtime {
@@ -351,11 +350,7 @@ async fn start(
         store,
         player,
         tx: tx.clone(),
-        config_writer: crate::config::spawn_writer(
-            config_path.clone(),
-            crate::config::SAVE_DEBOUNCE,
-        ),
-        config_path,
+        config_writer: crate::config::spawn_writer(config_path, crate::config::SAVE_DEBOUNCE),
     };
     let (state_tx, state_rx) = watch::channel(serde_json::to_string(&state)?);
     let (key_tx, key_rx) = unbounded_channel::<MediaKey>();
@@ -431,6 +426,8 @@ async fn host_loop(
     let mut shown_position = Duration::ZERO;
     let mut ticker = tokio::time::interval(TICK);
     let mut last_tick = Instant::now();
+    // What config.toml holds, or is about to once the debounce ends.
+    let mut last_saved = state.config.clone();
 
     let result: anyhow::Result<()> = async {
         loop {
@@ -461,6 +458,9 @@ async fn host_loop(
             };
             let Some(action) = action else { continue };
             for effect in update(&mut state, action) {
+                if matches!(effect, Effect::SaveConfig) {
+                    last_saved = state.config.clone();
+                }
                 rt.exec(effect, &state);
             }
             let json = serde_json::to_string(&state)?;
@@ -483,12 +483,13 @@ async fn host_loop(
     }
     .await;
 
-    // A change made just before quitting may still sit in the debounce.
-    if state.config_writable
-        && let Err(e) = state.config.save(&rt.config_path)
-    {
-        tracing::warn!("saving config: {e:#}");
+    // Only a change of ours is written, so an unchanged session never
+    // overwrites edits made to the file by hand meanwhile. Dropping the
+    // writer flushes a change that still sits in the debounce.
+    if state.config_writable && state.config != last_saved {
+        rt.config_writer.send_replace(Some(state.config.clone()));
     }
+    drop(rt.config_writer);
     tokio::time::sleep(QUIT_GRACE).await;
     result.map(|()| state)
 }
