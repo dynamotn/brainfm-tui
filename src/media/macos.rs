@@ -39,22 +39,27 @@ impl std::fmt::Debug for NowPlaying {
 
 impl NowPlaying {
     pub(crate) async fn start(keys: UnboundedSender<MediaKey>) -> Option<Self> {
-        let config = PlatformConfig {
-            display_name: "Brain.fm",
-            dbus_name: "brainfm",
-            hwnd: None,
-        };
-        let mut controls = MediaControls::new(config)
-            .map_err(|e| tracing::warn!("media controls unavailable: {e:?}"))
-            .ok()?;
-        controls
-            .attach(move |e| {
-                if let Some(k) = map_media(&e) {
-                    let _ = keys.send(k);
-                }
-            })
-            .map_err(|e| tracing::warn!("could not attach media controls: {e:?}"))
-            .ok()?;
+        // Commands registered off the main thread still fire, but Control
+        // Center greys out every button except play/pause.
+        let controls = dispatch2::run_on_main(move |_| {
+            let config = PlatformConfig {
+                display_name: "Brain.fm",
+                dbus_name: "brainfm",
+                hwnd: None,
+            };
+            let mut controls = MediaControls::new(config)
+                .map_err(|e| tracing::warn!("media controls unavailable: {e:?}"))
+                .ok()?;
+            controls
+                .attach(move |e| {
+                    if let Some(k) = map_media(&e) {
+                        let _ = keys.send(k);
+                    }
+                })
+                .map_err(|e| tracing::warn!("could not attach media controls: {e:?}"))
+                .ok()?;
+            Some(controls)
+        })?;
         Some(Self {
             controls: Mutex::new(controls),
             status: Mutex::new((Playback::Idle, Duration::ZERO)),

@@ -16,7 +16,7 @@ use is public.
 | `ui/` | Drawing `AppState` with ratatui; snapshot tests and screenshot rendering. |
 | `player/` | The audio engine thread: streaming, decoding, gapless queueing. |
 | `timer.rs` | Infinite, countdown and interval timers. |
-| `media/` | Desktop media controls: an MPRIS server on Linux, Now Playing on macOS. |
+| `media/` | Desktop media controls: an MPRIS server on Linux, Now Playing on macOS (its commands are registered on the main thread, or Control Center greys out all but play/pause). |
 | `share/` | The Unix socket between the daemon and its views, and the stop/reload requests. |
 | `headless/` | `brainfm play`: a state machine plus the loop that runs it. |
 

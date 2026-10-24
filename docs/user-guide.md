@@ -212,9 +212,9 @@ playerctl -p brainfm volume 0.4
 Each track has its own MPRIS track id, so widgets notice every change, even
 when the same track plays twice in a row.
 
-On macOS, brainfm uses the system Now Playing controls instead. That backend
-is built in CI but has not yet been tried on a real Mac. To receive its
-commands, the background process runs the main thread's run loop.
+On macOS, brainfm uses the system Now Playing controls instead: Control
+Center and the media keys show the track and can play, pause and skip it,
+even with no TUI open.
 
 ## Sound output
 
