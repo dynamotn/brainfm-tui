@@ -283,6 +283,7 @@ dependencies = [
  "futures",
  "humantime",
  "insta",
+ "objc2-core-foundation",
  "ratatui",
  "reqwest",
  "rodio",
