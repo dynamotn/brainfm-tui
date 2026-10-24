@@ -89,18 +89,7 @@ impl Host {
         }
         // Serialize check, remove and bind across processes, so a loser of
         // a stale-file race cannot delete the winner's fresh socket.
-        let mut lock_name = path.as_os_str().to_owned();
-        lock_name.push(".lock");
-        let lock = {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .mode(0o600)
-                .open(PathBuf::from(lock_name))?
-        };
-        lock.lock()?;
+        let _lock = lock_socket(path)?;
         if path.exists() {
             if std::os::unix::net::UnixStream::connect(path).is_ok() {
                 return Err(io::Error::new(
@@ -110,7 +99,7 @@ impl Host {
             }
             std::fs::remove_file(path)?;
         }
-        // `lock` is released when it drops, after the bind.
+        // `_lock` is released when it drops, after the bind.
         Ok(Self {
             listener: UnixListener::bind(path)?,
         })
@@ -151,6 +140,35 @@ impl Host {
                 tokio::spawn(refuse_one(stream, reply.clone(), stop.clone()));
             }
         }
+    }
+}
+
+/// Takes `<socket>.lock`, held while a socket file is checked and then
+/// removed or bound; released when the returned file drops.
+fn lock_socket(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut lock_name = path.as_os_str().to_owned();
+    lock_name.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(PathBuf::from(lock_name))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+/// Removes a socket file nobody listens on. Done under the bind lock and
+/// checked again there, so a socket another process just bound survives.
+fn remove_stale(path: &Path) {
+    let Ok(_lock) = lock_socket(path) else {
+        return;
+    };
+    if std::os::unix::net::UnixStream::connect(path)
+        .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionRefused)
+    {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -259,7 +277,7 @@ pub(crate) async fn attach(path: &Path) -> io::Result<Attach> {
         Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Attach::NoHost),
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-            let _ = std::fs::remove_file(path);
+            remove_stale(path);
             return Ok(Attach::NoHost);
         }
         Err(e) => return Err(e),
@@ -379,7 +397,7 @@ async fn connect_live(path: &Path) -> io::Result<Option<UnixStream>> {
         Ok(s) => Ok(Some(s)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-            let _ = std::fs::remove_file(path);
+            remove_stale(path);
             Ok(None)
         }
         Err(e) => Err(e),

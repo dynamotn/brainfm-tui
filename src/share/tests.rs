@@ -389,3 +389,15 @@ async fn a_silent_host_is_not_responding_rather_than_busy() {
         Attach::NotResponding
     ));
 }
+
+#[test]
+fn stale_removal_spares_a_live_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tui.sock");
+    let live = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    remove_stale(&path);
+    assert!(path.exists(), "a listening socket is kept");
+    drop(live);
+    remove_stale(&path);
+    assert!(!path.exists(), "a dead socket file is removed");
+}
