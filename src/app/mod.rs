@@ -1,6 +1,8 @@
 //! The TUI event loop: terminal, timer ticks, player and API results feed
 //! [`update::update`], whose effects are executed here.
 
+#[cfg(unix)]
+pub mod daemon;
 pub mod state;
 pub mod update;
 #[cfg(unix)]
@@ -14,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::watch;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
@@ -23,7 +26,7 @@ use crate::api::client::DEFAULT_BASE;
 use crate::api::{ApiClient, ApiError};
 use crate::config::{Config, state_dir};
 use crate::media::{Media, MediaKey, Mirror};
-use crate::player::{self, PlayerCommand, PlayerHandle};
+use crate::player::{self, PlayerCommand, PlayerEvent, PlayerHandle};
 use crate::session::SessionStore;
 use crate::ui::{self, Theme};
 use state::{AppState, Toast};
@@ -55,7 +58,8 @@ struct Runtime {
     store: SessionStore,
     player: PlayerHandle,
     tx: UnboundedSender<Action>,
-    config_writer: tokio::sync::watch::Sender<Option<Config>>,
+    config_writer: watch::Sender<Option<Config>>,
+    config_path: PathBuf,
 }
 
 impl Runtime {
@@ -173,8 +177,17 @@ impl Runtime {
             Effect::SaveConfig => {
                 self.config_writer.send_replace(Some(s.config.clone()));
             }
-            // Executed by the daemon host, not here.
-            Effect::ReloadSession => {}
+            // A view logged in (or out) on disk; pick up its session.
+            Effect::ReloadSession => match self.store.load() {
+                Ok(Some(session)) => {
+                    self.client.set_token(&session.token);
+                    let _ = self.tx.send(Action::Api(ApiReply::LoggedIn {
+                        user_id: session.user_id,
+                    }));
+                }
+                Ok(None) => tracing::warn!("reload asked, but no session is stored"),
+                Err(e) => tracing::warn!("reloading the session: {e:#}"),
+            },
         }
     }
 }
@@ -317,30 +330,44 @@ async fn mirror_to_media(
     }
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    let _log = init_logging()?;
+/// Where the host loop draws: a terminal, or nowhere (the daemon).
+enum Frontend {
+    Terminal(Box<Screen>),
+    Headless,
+}
 
-    // A second window joins the running session instead of starting its own.
-    #[cfg(unix)]
-    let host = match join_or_host().await? {
-        Start::Joined => return Ok(()),
-        Start::Host(host) => host,
-    };
+struct Screen {
+    terminal: ratatui::DefaultTerminal,
+    theme: Theme,
+}
 
+/// Event sources the host loop reads besides the terminal.
+struct Inputs {
+    actions: UnboundedReceiver<Action>,
+    player: UnboundedReceiver<PlayerEvent>,
+    media_keys: UnboundedReceiver<MediaKey>,
+    media: Option<Media>,
+    states: watch::Sender<String>,
+}
+
+/// Opens the audio device and media controls, wires the channels and
+/// starts the first fetches. The returned receiver carries every state
+/// the host publishes, for [`crate::share::Host::serve`].
+async fn start(
+    setup: Setup,
+) -> anyhow::Result<(Runtime, Inputs, AppState, watch::Receiver<String>)> {
     let Setup {
         config_path,
         store,
         client,
-        mut state,
-    } = setup()?;
-
-    // Fail before touching the terminal if there is no audio device.
-    let (player, mut player_rx) = player::spawn(tokio::runtime::Handle::current())?;
+        state,
+    } = setup;
+    let (player, player_rx) = player::spawn(tokio::runtime::Handle::current())?;
     player.send(PlayerCommand::SetVolume(
         f32::from(state.config.volume) / 100.0,
     ));
 
-    let (tx, mut rx) = unbounded_channel::<Action>();
+    let (tx, rx) = unbounded_channel::<Action>();
     let rt = Runtime {
         client,
         store,
@@ -350,58 +377,116 @@ pub async fn run() -> anyhow::Result<()> {
             config_path.clone(),
             crate::config::SAVE_DEBOUNCE,
         ),
+        config_path,
     };
-    let (state_tx, state_rx) = tokio::sync::watch::channel(serde_json::to_string(&state)?);
-    #[cfg(unix)]
-    let _socket = host.map(|(h, guard)| {
-        tokio::spawn(h.serve(state_rx, tx.clone()));
-        guard
-    });
-    #[cfg(not(unix))]
-    drop(state_rx);
-
-    let (key_tx, mut key_rx) = unbounded_channel::<MediaKey>();
+    let (state_tx, state_rx) = watch::channel(serde_json::to_string(&state)?);
+    let (key_tx, key_rx) = unbounded_channel::<MediaKey>();
     let media = Media::start(key_tx).await;
-    let mut mirror = Mirror::default();
-    let mut shown_position = Duration::ZERO;
 
     if state.user_id.is_some() {
         rt.exec(Effect::FetchStates, &state);
         rt.exec(Effect::FetchLibrary, &state);
     }
+    let inputs = Inputs {
+        actions: rx,
+        player: player_rx,
+        media_keys: key_rx,
+        media,
+        states: state_tx,
+    };
+    Ok((rt, inputs, state, state_rx))
+}
 
-    let theme = Theme::detect();
-    let mut terminal = ratatui::init();
-    let mut events = EventStream::new();
+/// The next terminal event, or never when there is no terminal.
+async fn next_event(events: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
+    match events {
+        Some(e) => e.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// SIGHUP, listened for only by the daemon: it must outlive the terminal
+/// it was started from. A TUI keeps the default (exit on hangup).
+struct Hangup(#[cfg(unix)] Option<tokio::signal::unix::Signal>);
+
+impl Hangup {
+    fn new(listen: bool) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Self(if listen {
+                Some(signal(SignalKind::hangup())?)
+            } else {
+                None
+            }))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = listen;
+            Ok(Self())
+        }
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        if let Some(sig) = &mut self.0
+            && sig.recv().await.is_some()
+        {
+            return;
+        }
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Runs the session until the state asks to quit, then saves the config
+/// and waits out the quit fade.
+async fn host_loop(
+    rt: Runtime,
+    mut inputs: Inputs,
+    mut state: AppState,
+    mut frontend: Frontend,
+) -> anyhow::Result<AppState> {
+    let headless = matches!(frontend, Frontend::Headless);
+    let mut hangup = Hangup::new(headless)?;
+    let mut events = (!headless).then(EventStream::new);
+    let mut mirror = Mirror::default();
+    let mut shown_position = Duration::ZERO;
     let mut ticker = tokio::time::interval(TICK);
     let mut last_tick = Instant::now();
 
     let result: anyhow::Result<()> = async {
         loop {
-            terminal.draw(|f| ui::draw(f, &state, &theme))?;
+            if let Frontend::Terminal(screen) = &mut frontend {
+                let Screen { terminal, theme } = &mut **screen;
+                terminal.draw(|f| ui::draw(f, &state, theme))?;
+            }
             let action = tokio::select! {
-                ev = events.next() => match ev {
+                ev = next_event(&mut events) => match ev {
                     Some(Ok(Event::Key(k))) => Some(Action::Key(k)),
                     Some(Ok(_)) => None,
                     Some(Err(e)) => return Err(e.into()),
                     None => break,
                 },
+                () = hangup.recv() => {
+                    tracing::info!("ignoring SIGHUP");
+                    None
+                }
                 _ = ticker.tick() => {
                     let now = Instant::now();
                     let dt = now - last_tick;
                     last_tick = now;
                     Some(Action::Tick(dt))
                 }
-                Some(ev) = player_rx.recv() => Some(Action::Player(ev)),
-                Some(a) = rx.recv() => Some(a),
-                Some(k) = key_rx.recv() => Some(Action::Media(k)),
+                Some(ev) = inputs.player.recv() => Some(Action::Player(ev)),
+                Some(a) = inputs.actions.recv() => Some(a),
+                Some(k) = inputs.media_keys.recv() => Some(Action::Media(k)),
             };
             let Some(action) = action else { continue };
             for effect in update(&mut state, action) {
                 rt.exec(effect, &state);
             }
             let json = serde_json::to_string(&state)?;
-            state_tx.send_if_modified(|current| {
+            inputs.states.send_if_modified(|current| {
                 let changed = *current != json;
                 if changed {
                     *current = json;
@@ -409,7 +494,7 @@ pub async fn run() -> anyhow::Result<()> {
                 changed
             });
 
-            if let Some(m) = &media {
+            if let Some(m) = &inputs.media {
                 mirror_to_media(m, &mut mirror, &mut shown_position, &state).await;
             }
             if state.quit {
@@ -422,11 +507,40 @@ pub async fn run() -> anyhow::Result<()> {
 
     // A change made just before quitting may still sit in the debounce.
     if state.config_writable
-        && let Err(e) = state.config.save(&config_path)
+        && let Err(e) = state.config.save(&rt.config_path)
     {
         tracing::warn!("saving config: {e:#}");
     }
     tokio::time::sleep(QUIT_GRACE).await;
+    result.map(|()| state)
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let _log = init_logging()?;
+
+    // A second window joins the running session instead of starting its own.
+    #[cfg(unix)]
+    let host = match join_or_host().await? {
+        Start::Joined => return Ok(()),
+        Start::Host(host) => host,
+    };
+
+    // Fails before touching the terminal if there is no audio device.
+    let (rt, inputs, state, state_rx) = start(setup()?).await?;
+    #[cfg(unix)]
+    let _socket = host.map(|(h, guard)| {
+        tokio::spawn(h.serve(state_rx, rt.tx.clone()));
+        guard
+    });
+    #[cfg(not(unix))]
+    drop(state_rx);
+
+    let theme = Theme::detect();
+    let screen = Screen {
+        terminal: ratatui::init(),
+        theme,
+    };
+    let result = host_loop(rt, inputs, state, Frontend::Terminal(Box::new(screen))).await;
     ratatui::restore();
-    result
+    result.map(drop)
 }

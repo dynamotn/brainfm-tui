@@ -37,6 +37,10 @@ pub enum Command {
     },
     /// Play a mental state without the TUI
     Play(PlayArgs),
+    /// Host the session in the background for TUIs to attach to
+    #[cfg(unix)]
+    #[command(hide = true)]
+    Daemon,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -213,6 +217,8 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         Command::Whoami => whoami(&store).await,
         Command::List { what, state } => list(&store, what, state).await,
         Command::Play(args) => crate::headless::play(&store, args).await,
+        #[cfg(unix)]
+        Command::Daemon => crate::app::daemon::run().await,
     }
 }
 

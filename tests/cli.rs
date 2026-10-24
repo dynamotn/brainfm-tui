@@ -25,3 +25,19 @@ fn wrong_password_is_not_reported_as_expired_session() {
     );
     assert!(msg.contains("brainfm login"), "{msg}");
 }
+
+#[cfg(unix)]
+#[test]
+fn daemon_without_session_fails() {
+    let home = tempfile::tempdir().expect("temp dir");
+    let out = Command::new(env!("CARGO_BIN_EXE_brainfm"))
+        .arg("daemon")
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", home.path())
+        .env("XDG_RUNTIME_DIR", home.path())
+        .output()
+        .expect("run brainfm daemon");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "daemon exited 0; stderr:\n{stderr}");
+    assert!(stderr.contains("brainfm login"), "stderr:\n{stderr}");
+}

@@ -8,6 +8,8 @@ async fn run() -> u8 {
     let cli = cli::Cli::parse();
     let during_login = matches!(cli.command, Some(cli::Command::Login { .. }));
     let result = match cli.command {
+        #[cfg(unix)]
+        Some(cli::Command::Daemon) => app::daemon::run().await,
         Some(cmd) => cli::run(cmd).await,
         None => app::run().await,
     };
