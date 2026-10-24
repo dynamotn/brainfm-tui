@@ -10,6 +10,16 @@ use crate::share::{Host, SocketGuard, socket_path};
 /// Returns at once, successfully, if another host already holds the socket.
 pub async fn run() -> anyhow::Result<()> {
     let _log = init_logging()?;
+    let result = host().await;
+    // Started from a TUI with no stderr, so the log is the only place the
+    // reason can be read.
+    if let Err(e) = &result {
+        tracing::error!("{e:#}");
+    }
+    result
+}
+
+async fn host() -> anyhow::Result<()> {
     let mut setup = setup()?;
     // Checked before the audio device or the socket are touched.
     if setup.state.user_id.is_none() {

@@ -6,6 +6,7 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyM
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::watch;
 
 use super::login;
 use super::state::AppState;
@@ -69,8 +70,9 @@ pub(super) async fn run(
                     } else if state.overlay.is_none() && is_capital(&k, 'L') && state.needs_login {
                         // Leaves `events` idle while the form reads the terminal.
                         match log_in(terminal, theme, store, api, &mut states, &mut state).await? {
-                            Some(true) => keys.reload().await,
-                            Some(false) => Ok(()),
+                            Some(login::Outcome::LoggedIn(_)) => keys.reload().await,
+                            Some(login::Outcome::Closed) => Ok(()),
+                            Some(login::Outcome::Quit) => return Ok(Ended::ByUser),
                             None => return Ok(gone(stopping)),
                         }
                     } else {
@@ -94,9 +96,7 @@ pub(super) async fn run(
 }
 
 /// Runs the login form while still taking the daemon's states, so the
-/// connection stays alive. `Some(true)` when the user logged in,
-/// `Some(false)` when the form closed (by the user, or because another view
-/// logged in first), `None` when the daemon went away.
+/// connection stays alive. `None` when the daemon went away meanwhile.
 async fn log_in(
     terminal: &mut DefaultTerminal,
     theme: &Theme,
@@ -104,16 +104,16 @@ async fn log_in(
     api: &ApiClient,
     states: &mut States,
     state: &mut AppState,
-) -> anyhow::Result<Option<bool>> {
+) -> anyhow::Result<Option<login::Outcome>> {
+    let (elsewhere, elsewhere_rx) = watch::channel(false);
     let follow = async {
         loop {
             match states.recv().await {
                 Some(Ok(Some(s))) => {
-                    let done = !s.needs_login;
-                    *state = s;
-                    if done {
-                        return Ok(Some(false));
+                    if !s.needs_login {
+                        elsewhere.send_replace(true);
                     }
+                    *state = s;
                 }
                 Some(Err(e)) => return Err(anyhow::Error::from(e)),
                 Some(Ok(None)) | None => return Ok(None),
@@ -121,7 +121,7 @@ async fn log_in(
         }
     };
     tokio::select! {
-        r = login::run(terminal, theme, store, api, true) => Ok(Some(r?.is_some())),
+        r = login::run(terminal, theme, store, api, true, elsewhere_rx) => r.map(Some),
         r = follow => r,
     }
 }

@@ -1096,3 +1096,62 @@ fn capital_q_and_l_are_not_reducer_keys() {
         }
     }
 }
+
+#[cfg(unix)]
+mod login_form {
+    use super::super::login::{ELSEWHERE, Form, Outcome, Step};
+    use super::*;
+
+    fn form_error(f: &Form) -> Option<String> {
+        match &f.state().overlay {
+            Some(Overlay::Login { error, .. }) => error.clone(),
+            other => panic!("form closed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logged_in_elsewhere_keeps_the_form_open_and_keys_local() {
+        let mut f = Form::new(true);
+        f.logged_in_elsewhere();
+        assert_eq!(form_error(&f).as_deref(), Some(ELSEWHERE));
+        // Typing on (into the email field, then the password) stays in the form.
+        for c in "me q Qn".chars() {
+            assert_eq!(f.handle(key(c)), Step::Continue);
+        }
+        assert_eq!(f.handle(code(KeyCode::Tab)), Step::Continue);
+        assert_eq!(f.handle(key('x')), Step::Continue);
+        assert_eq!(form_error(&f).as_deref(), Some(ELSEWHERE));
+        assert_eq!(f.handle(code(KeyCode::Esc)), Step::Done(Outcome::Closed));
+    }
+
+    #[test]
+    fn ctrl_c_quits_the_form() {
+        let mut f = Form::new(true);
+        let ctrl_c = Action::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(f.handle(ctrl_c), Step::Done(Outcome::Quit));
+    }
+
+    #[test]
+    fn esc_does_not_close_a_required_form() {
+        let mut f = Form::new(false);
+        assert_eq!(f.handle(code(KeyCode::Esc)), Step::Continue);
+    }
+
+    #[test]
+    fn submitting_asks_for_a_login_and_a_reply_ends_the_form() {
+        let mut f = Form::new(false);
+        for c in "a@b".chars() {
+            f.handle(key(c));
+        }
+        f.handle(code(KeyCode::Enter));
+        f.handle(key('p'));
+        let Step::LogIn { email, password } = f.handle(code(KeyCode::Enter)) else {
+            panic!("expected a login");
+        };
+        assert_eq!((email.as_str(), password.expose()), ("a@b", "p"));
+        let reply = Action::Api(ApiReply::LoggedIn {
+            user_id: "u9".into(),
+        });
+        assert_eq!(f.handle(reply), Step::Done(Outcome::LoggedIn("u9".into())));
+    }
+}

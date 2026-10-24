@@ -377,3 +377,15 @@ async fn stop_after_hello_reaches_the_host() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_silent_host_is_not_responding_rather_than_busy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tui.sock");
+    // Bound and listening, but nobody ever answers the hello.
+    let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    assert!(matches!(
+        attach(&path).await.unwrap(),
+        Attach::NotResponding
+    ));
+}

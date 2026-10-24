@@ -240,6 +240,9 @@ async fn serve_view(
     count_view(&views, &actions, -1);
 }
 
+/// Why [`Attach::NotResponding`] gives up.
+pub(crate) const NOT_RESPONDING: &str = "the running brainfm is not responding";
+
 /// What a new TUI finds at the socket.
 #[derive(Debug)]
 pub(crate) enum Attach {
@@ -247,6 +250,9 @@ pub(crate) enum Attach {
     NoHost,
     /// Something else holds the session and will not share it.
     Busy(String),
+    /// Something holds the socket but sent nothing in time (it may still be
+    /// starting up); [`NOT_RESPONDING`] says so to the user.
+    NotResponding,
     /// Attached to a running session.
     Session(Box<Client>),
 }
@@ -282,7 +288,7 @@ pub(crate) async fn attach(path: &Path) -> io::Result<Attach> {
             "the running brainfm closed the connection".into(),
         )),
         Ok(Err(e)) => Err(e),
-        Err(_) => Ok(Attach::Busy("the running brainfm is not responding".into())),
+        Err(_) => Ok(Attach::NotResponding),
     }
 }
 

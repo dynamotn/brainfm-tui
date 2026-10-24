@@ -28,7 +28,8 @@ pub(super) async fn start_daemon(path: &Path) -> anyhow::Result<Box<share::Clien
         match attach(path).await? {
             Attach::Session(client) => return Ok(client),
             Attach::Busy(reason) => anyhow::bail!("{reason}"),
-            Attach::NoHost => {}
+            // Bound but still starting up (opening the audio device, …).
+            Attach::NoHost | Attach::NotResponding => {}
         }
         // A daemon that lost the race exits successfully; keep polling for
         // the winner. A failed one will never answer.

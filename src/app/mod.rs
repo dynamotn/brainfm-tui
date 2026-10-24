@@ -520,17 +520,21 @@ async fn run_view() -> anyhow::Result<()> {
     let theme = Theme::detect();
     let mut terminal = ratatui::init();
     let result = async {
-        if state.user_id.is_none()
-            && login::run(&mut terminal, &theme, &store, &client, false)
-                .await?
-                .is_none()
-        {
-            return Ok(view::Ended::ByUser);
+        if state.user_id.is_none() {
+            // Nobody else can log in for this window before it attaches.
+            let (_, never) = tokio::sync::watch::channel(false);
+            let outcome = login::run(&mut terminal, &theme, &store, &client, false, never).await?;
+            if !matches!(outcome, login::Outcome::LoggedIn(_)) {
+                return Ok(view::Ended::ByUser);
+            }
         }
         let path = crate::share::socket_path()?;
         let session = match crate::share::attach(&path).await? {
             crate::share::Attach::Session(c) => c,
             crate::share::Attach::Busy(reason) => anyhow::bail!("{reason}"),
+            crate::share::Attach::NotResponding => {
+                anyhow::bail!("{}", crate::share::NOT_RESPONDING)
+            }
             crate::share::Attach::NoHost => spawn::start_daemon(&path).await?,
         };
         view::run(session, &mut terminal, &theme, &store, &client).await

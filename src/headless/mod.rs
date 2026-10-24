@@ -266,6 +266,7 @@ async fn claim_session() -> anyhow::Result<Option<crate::share::SocketGuard>> {
             bail!("A brainfm TUI is already playing; control it there, or quit it first")
         }
         Attach::Busy(reason) => bail!("{reason}"),
+        Attach::NotResponding => bail!("{}", crate::share::NOT_RESPONDING),
         Attach::NoHost => match Host::bind(&path) {
             Ok(host) => {
                 // Wiring `brainfm stop` to end `play` comes later; for now the
