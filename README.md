@@ -32,9 +32,10 @@ written in Rust. No browser, no Electron, no external player.
   widget, and media keys and `playerctl` control it, both in the TUI and in
   `brainfm play`. Audio goes through PulseAudio or PipeWire, so it gets its
   own volume slider in your mixer.
-- **One session, any number of windows.** Open brainfm in a second terminal
-  and it joins the session that is playing instead of starting another
-  stream.
+- **Music keeps playing after the TUI closes.** Playback lives in a
+  background process: close the window with `q` and it carries on, reopen
+  brainfm to pick the session back up, or run `brainfm stop`. Any number of
+  windows can show the same session.
 - **Scriptable.** `brainfm play focus --intervals 25m/5m` runs a headless
   session from a shell, a status bar or a cron job.
 - **Light and private.** One small binary. Audio streams into memory and is

@@ -10,7 +10,7 @@ every file and setting.
 - [Choosing what plays](#choosing-what-plays)
 - [Timers](#timers)
 - [Library, Explore and Profile](#library-explore-and-profile)
-- [Several windows, one session](#several-windows-one-session)
+- [Background playback and several windows](#background-playback-and-several-windows)
 - [Media keys and desktop widgets](#media-keys-and-desktop-widgets)
 - [Sound output](#sound-output)
 - [Playing from the command line](#playing-from-the-command-line)
@@ -56,7 +56,7 @@ Other account commands:
 
 ```sh
 brainfm whoami    # user id, email and name
-brainfm logout    # forget the stored token
+brainfm logout    # stop the music, then forget the stored token
 ```
 
 ## The player
@@ -98,7 +98,9 @@ above the footer.
 | `j`/`k` or arrows, `enter` | Move and select in the panel and in pickers. |
 | `esc` | Close a picker. |
 | `?` | Show all keys. |
-| `q`, `ctrl-c` | Quit. |
+| `q`, `ctrl-c` | Close this window. The music keeps playing in the background. |
+| `Q` | Stop the music and quit. |
+| `L` | Log in again, when the banner says the session expired. |
 
 Tracks continue on their own: the next one is fetched 20 seconds before the
 current one ends, so there is no gap between them.
@@ -151,19 +153,38 @@ uses the whole width. On wider terminals `p` hides or shows it.
 
 ![The player at 80 by 24](screenshots/compact.png)
 
-## Several windows, one session
+## Background playback and several windows
 
-Open `brainfm` in a second terminal and it joins the session that is already
-running instead of starting another. Every window shows the same track,
-timer, filters and popups, and only one audio stream plays.
+The first `brainfm` you open starts a background process, `brainfm daemon`,
+which plays the music and holds the session. The window is only a view of it.
+Close the window and the music keeps playing; open `brainfm` again, in this
+terminal or another, and it shows the same track, timer, filters and popups.
+Only one audio stream ever plays.
 
-- Any window can control the session. Keys go to the window that started it.
+- Any window can control the session, and any number can be open at once.
 - `q` or `ctrl-c` closes only the window you press it in.
-- Closing the first window ends the session; the others tell you so and exit.
+- `Q` stops the music and the background process.
+- The daemon exits on its own after 10 minutes with no window open and
+  nothing playing. A running timer counts as playing.
+- To stop it from a shell, run `brainfm stop`. It prints nothing and exits 0
+  when nothing is running, and it also stops a `brainfm play` session.
+- If a window finds a daemon of another version, it exits and asks you to run
+  `brainfm stop`; start `brainfm` again afterwards.
 
-Windows find each other through a socket in `$XDG_RUNTIME_DIR/brainfm/`. A
+If the session expires, the footer says so. Press `L` in any window to log in
+again; the background process picks up the new login and the banner clears in
+every window. You type the password in your own window and it never crosses the
+socket. If you log in from another window first, the form stays open and says
+"Logged in from another window — press Esc". `brainfm login` in a shell also
+tells a running daemon to use the new token, and `brainfm logout` stops it
+first.
+
+Windows find the daemon through a socket in `$XDG_RUNTIME_DIR/brainfm/`. A
 `brainfm play` session holds it too, so the TUI and the command line never
-play at the same time; whichever starts second explains why it cannot.
+play at the same time; whichever starts second explains why it cannot. The
+daemon and `brainfm stop` need Unix; elsewhere the TUI plays in its own
+process and stops when you quit. If the daemon fails to start or stops
+unexpectedly, the reason is in the log.
 
 ## Media keys and desktop widgets
 
@@ -189,7 +210,8 @@ Each track has its own MPRIS track id, so widgets notice every change, even
 when the same track plays twice in a row.
 
 On macOS, brainfm uses the system Now Playing controls instead. That backend
-is built in CI but has not yet been tried on a real Mac.
+is built in CI but has not yet been tried on a real Mac. To receive its
+commands, the background process runs the main thread's run loop.
 
 ## Sound output
 

@@ -8,16 +8,16 @@ use is public.
 
 | Module | Responsibility |
 |---|---|
-| `main.rs`, `cli.rs` | Argument parsing, the `login`/`logout`/`whoami`/`list` commands, exit codes. |
+| `main.rs`, `cli.rs` | Argument parsing, the `login`/`logout`/`whoami`/`list`/`stop` commands, exit codes. On macOS the main thread runs a `CFRunLoop` (Now Playing needs it) and tokio runs on another thread; a panic there exits 101. |
 | `api/` | Typed client for `api.brain.fm`: requests, response envelopes, errors. |
 | `session.rs`, `secret.rs` | The stored token, and a string type for passwords that never prints. |
 | `config.rs` | `config.toml`: loading, atomic and debounced saving. |
-| `app/` | The TUI: state, reducer, event loop, and the view used by extra windows. |
+| `app/` | State, reducer and event loop. `daemon.rs` is the hidden `brainfm daemon` that owns playback; `view.rs` is the TUI as a view of it; `login.rs` is the local login form; `spawn.rs` starts the daemon. |
 | `ui/` | Drawing `AppState` with ratatui; snapshot tests and screenshot rendering. |
 | `player/` | The audio engine thread: streaming, decoding, gapless queueing. |
 | `timer.rs` | Infinite, countdown and interval timers. |
 | `media/` | Desktop media controls: an MPRIS server on Linux, Now Playing on macOS. |
-| `share/` | The Unix socket that lets several windows share one session. |
+| `share/` | The Unix socket between the daemon and its views, and the stop/reload requests. |
 | `headless/` | `brainfm play`: a state machine plus the loop that runs it. |
 
 ## The TUI: state, actions, effects
@@ -35,7 +35,7 @@ flowchart LR
     eng[Player events] --> loop
     api[API replies] --> loop
     keys[Media keys] --> loop
-    views[Keys from other windows] --> loop
+    views[Keys from views] --> loop
     loop((event loop)) -->|Action| update[update]
     update -->|new AppState| draw[ui::draw]
     update -->|Effect list| exec[Runtime::exec]
@@ -107,33 +107,70 @@ checked against `[A-Za-z0-9_-]` before they go into a URL path.
 it: an expired session opens the login form, while other errors show a
 message. Everything else uses `anyhow` with context.
 
-## Several windows: `share/`
+## The daemon and its views: `share/`
 
-The first `brainfm` binds `$XDG_RUNTIME_DIR/brainfm/tui.sock` and becomes the
-**host**. A later window connects and becomes a **view**.
+Playback lives in `brainfm daemon`, a hidden subcommand that runs the same
+reducer and event loop as the TUI but with no terminal. It binds
+`$XDG_RUNTIME_DIR/brainfm/tui.sock` and becomes the **host**. Every `brainfm`
+window is a **view** (`app/view.rs`): it logs in locally if needed, attaches to
+the socket, or spawns the daemon first and then attaches. The daemon, the
+socket and spawning are `cfg(unix)`; elsewhere the TUI keeps running as a
+single process.
 
 ```mermaid
 sequenceDiagram
-    participant V as View (second window)
-    participant H as Host (first window)
-    V->>H: Hello {version}
-    H-->>V: State {whole AppState}
-    V->>H: Key {key event}
-    Note over H: Action::RemoteKey → update
-    H-->>V: State {…} after every change
-    Note over H: host quits → socket closes → view exits
+    participant V as View (TUI window)
+    participant D as Daemon (host)
+    V->>D: Hello {version}
+    D-->>V: State {whole AppState}
+    V->>D: Key {key event}
+    Note over D: Action::RemoteKey → update
+    D-->>V: State {…} after every change
+    V->>D: Reload (after a login)
+    V->>D: Stop (Q)
+    Note over D: Shutdown → socket closes → views exit
 ```
 
-- The protocol is one JSON object per line.
+- The protocol is one JSON object per line. `ToHost` is `Hello`, `Key`,
+  `Reload` and `Stop`; the host also reports the number of views in the state.
 - The host publishes the serialized state through a `watch` channel, so a
   slow view only ever receives the latest state.
 - Views draw that state with the same `ui::draw`, at their own terminal size.
 - Remote keys arrive as `Action::RemoteKey`. The reducer ignores quit keys
-  from them, so a view can close itself but never the host.
-- The password typed into a login form crosses the socket only as a mask of
-  the same length (`Secret`'s serializer).
+  from them, so `q` closes a view and never the host. `Q` is sent as `Stop`.
+- `Stop` is accepted as the first line of a connection, with no version
+  check. Its shape (`{"t":"Stop"}`) is frozen so that any release can stop any
+  other. It becomes `Action::Shutdown`. `request_stop` waits up to 5 seconds
+  for the socket to go away and treats a missing or stale socket as nothing to
+  stop.
+- `Reload` becomes `Action::ReloadSession`: the daemon re-reads the token
+  from the session store. It is idempotent, so two views logging in at once is
+  harmless.
+- The password never crosses the socket. A view logs in on its own
+  (`app/login.rs`), the token lands in the session store, and only then does
+  it send `Reload`.
+- When the daemon's API calls come back `Unauthorized` it sets
+  `needs_login`; every view shows the banner, and `L` opens the local form.
+  A form that is already open never closes by itself if another view logs in
+  first; it says so and waits for `Esc`.
+- `Host::bind` takes a `<socket>.lock` file for the whole check-and-bind, so
+  two views starting together end up with exactly one daemon; the loser exits
+  quietly and both attach to the winner. A view that finds a host of a
+  different version gets `Busy` with a request to run `brainfm stop`;
+  `Attach::NotResponding` covers a socket that accepts but does not answer.
 - `brainfm play` holds the socket as well and answers every view with
-  `Busy`, so the TUI and the command line never play two streams.
+  `Busy`, so the TUI and the command line never play two streams. It obeys
+  `Stop` and exits 0.
+
+### Lifetime
+
+The daemon starts detached from the terminal that spawned it and ignores
+SIGHUP, so closing that terminal does not stop playback. It bails at startup
+without a stored session, and logs errors to `brainfm.log` since it has no
+stderr. It ends on `Stop`, or on its own after `IDLE_EXIT` (10 minutes)
+with no views, nothing playing and no timer running. The idle check lives in
+the reducer, driven by the tick, and applies only to the daemon (a
+single-process TUI is never idle-closed).
 
 ## Media controls: `media/`
 
