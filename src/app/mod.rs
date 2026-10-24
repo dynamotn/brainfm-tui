@@ -167,7 +167,7 @@ impl Runtime {
             Effect::SaveConfig => {
                 self.config_writer.send_replace(Some(s.config.clone()));
             }
-            // A view logged in (or out) on disk; pick up its session.
+            // A view or `brainfm login` stored a new session; pick it up.
             Effect::ReloadSession => match self.store.load() {
                 Ok(Some(session)) => {
                     self.client.set_token(&session.token);
@@ -542,7 +542,7 @@ async fn run_view() -> anyhow::Result<()> {
     .await;
     ratatui::restore();
     if let view::Ended::HostGone = result? {
-        eprintln!("The brainfm session in the other window has ended.");
+        eprintln!("The background player stopped.");
     }
     Ok(())
 }

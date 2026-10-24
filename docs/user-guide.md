@@ -265,7 +265,7 @@ Exit status is 0 on a normal end, 2 when the session has expired (run
 ## Troubleshooting
 
 **"Session expired — run `brainfm login`"**: the stored token is no longer
-valid. Log in again. In the TUI a login form opens by itself.
+valid. Log in again. In the TUI a banner says so; press `L` to log in.
 
 **"No tracks match these filters"**: the activity, genres and effect level
 together leave nothing to play. Allow more genres or levels.

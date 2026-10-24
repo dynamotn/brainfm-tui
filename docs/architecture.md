@@ -132,7 +132,7 @@ sequenceDiagram
 ```
 
 - The protocol is one JSON object per line. `ToHost` is `Hello`, `Key`,
-  `Reload` and `Stop`; the host also reports the number of views in the state.
+  `Reload` and `Stop`.
 - The host publishes the serialized state through a `watch` channel, so a
   slow view only ever receives the latest state.
 - Views draw that state with the same `ui::draw`, at their own terminal size.

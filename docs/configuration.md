@@ -11,8 +11,8 @@ Paths follow the XDG base directory spec; the table shows the Linux defaults.
 |---|---|---|
 | Preferences | `~/.config/brainfm/config.toml` | Volume, filters per mental state, timer lengths. |
 | Session | `~/.local/state/brainfm/session.json` | The login token. Mode `0600`, in a `0700` directory. |
-| Log | `~/.local/state/brainfm/brainfm.log` | Warnings and errors from the TUI. |
-| Session socket | `$XDG_RUNTIME_DIR/brainfm/tui.sock` | Lets several windows share one session. Removed on exit. |
+| Log | `~/.local/state/brainfm/brainfm.log` | Warnings and errors from the TUI and the background player. |
+| Session socket | `$XDG_RUNTIME_DIR/brainfm/tui.sock` | Connects TUI windows to the background player. Removed on exit. |
 
 If `XDG_RUNTIME_DIR` is not set, the socket goes into the state directory
 instead.

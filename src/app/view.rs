@@ -44,7 +44,7 @@ pub(super) async fn run(
 ) -> anyhow::Result<Ended> {
     let (first, mut states, mut keys) = client.split();
     let Some(mut state) = first else {
-        anyhow::bail!("the brainfm session in the other window has ended");
+        anyhow::bail!("The background player stopped.");
     };
     let mut events = EventStream::new();
     let mut stopping = false;

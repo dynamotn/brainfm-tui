@@ -1,8 +1,8 @@
 //! One listening session shared by every TUI on the machine.
 //!
-//! The first `brainfm` binds a Unix socket and becomes the host: it owns the
-//! player, the API client and the state. Later TUIs attach as views: they
-//! send key presses and draw whatever state the host publishes, so every
+//! The `brainfm daemon` binds a Unix socket and is the host: it owns the
+//! player, the API client and the state. Every TUI attaches as a view: it
+//! sends key presses and draws whatever state the host publishes, so every
 //! window shows the same session and only one audio stream ever plays.
 //! `brainfm play` holds the socket too, turning TUIs away with a reason.
 //!
