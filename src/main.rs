@@ -21,11 +21,16 @@ async fn run() -> u8 {
 }
 
 fn block_on_run() -> u8 {
-    tokio::runtime::Builder::new_multi_thread()
+    match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("tokio runtime")
-        .block_on(run())
+    {
+        Ok(runtime) => runtime.block_on(run()),
+        Err(e) => {
+            eprintln!("cannot start the async runtime: {e}");
+            1
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -39,7 +44,12 @@ fn main() -> ExitCode {
 fn main() -> ExitCode {
     use objc2_core_foundation::CFRunLoop;
 
-    std::thread::spawn(|| std::process::exit(i32::from(block_on_run())));
+    std::thread::spawn(|| {
+        // A panic would unwind only this thread and leave the main thread
+        // looping forever, so turn it into the usual 101 exit.
+        let code = std::panic::catch_unwind(block_on_run).map_or(101, i32::from);
+        std::process::exit(code)
+    });
 
     loop {
         // Returns at once while the loop has no sources; avoid spinning.
